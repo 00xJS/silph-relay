@@ -39,7 +39,7 @@ def post_to_discord(post):
             for i, (path, name) in enumerate(images[:MAX_IMAGES]):
                 files[f"files[{i}]"] = (name, open(path, "rb"))
 
-            payload = {"content": content}
+            payload = {"content": content, "flags": 4}
             r = requests.post(WEBHOOK_URL, data={"payload_json": __import__("json").dumps(payload)}, files=files, timeout=30)
 
             # Close file handles
@@ -47,7 +47,7 @@ def post_to_discord(post):
                 fh.close()
         else:
             # Text-only post
-            r = requests.post(WEBHOOK_URL, json={"content": content}, timeout=30)
+            r = requests.post(WEBHOOK_URL, json={"content": content, "flags": 4}, timeout=30)
 
         if r.status_code in (200, 204):
             return True

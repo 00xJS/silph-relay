@@ -60,6 +60,15 @@ def download_image(url):
         return None, None
 
 
+def warmup():
+    """Ping RSSHub so Render wakes up before we start fetching."""
+    try:
+        requests.get(RSSHUB_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+        print("  [fetcher] RSSHub warmed up")
+    except Exception:
+        print("  [fetcher] Warm-up ping failed — continuing anyway")
+
+
 def fetch_account(account, seen_ids):
     """Fetch new posts for a single account. Returns list of post dicts."""
     handle  = account["handle"]
@@ -116,6 +125,7 @@ def fetch_account(account, seen_ids):
 
 def fetch_all(seen_ids):
     """Fetch new posts from all tracked accounts."""
+    warmup()
     all_posts = []
     for account in ACCOUNTS:
         all_posts.extend(fetch_account(account, seen_ids))
