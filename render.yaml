@@ -1,0 +1,52 @@
+# Optional Blueprint for Render.
+# Dashboard deploy also works: New → Web Service → this repo → Docker runtime.
+#
+# NOTE: a free web service sleeps after 15 min without inbound traffic, so add
+# an UptimeRobot (or cron-job.org) monitor hitting <your-url>/health every 5
+# min to keep it awake. Only ONE always-on free service fits the 750 hr/month
+# pool per workspace.
+services:
+  - type: web
+    name: silph-relay
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # ── X auth (required) ─────────────────────────────────────────────────
+      # auth_token cookie of ONE burner X account (RSSHub twitter routes need
+      # it). Use a throwaway account, never a personal one.
+      - key: TWITTER_AUTH_TOKEN
+        sync: false
+
+      # ── Discord webhooks (required) ───────────────────────────────────────
+      - key: DISCORD_WEBHOOK_UPDATES
+        sync: false
+      - key: DISCORD_WEBHOOK_DROPS
+        sync: false
+
+      # ── RSSHub (co-located) ───────────────────────────────────────────────
+      - key: RSSHUB_URL
+        value: http://127.0.0.1:1200
+      - key: RSSHUB_PORT
+        value: "1200"
+      - key: CACHE_EXPIRE
+        value: "30"
+
+      # ── Poll cadence (keep >= 40s on one token) ───────────────────────────
+      - key: POLL_INTERVAL_SECONDS
+        value: "45"
+      - key: SWEEP_INTERVAL_SECONDS
+        value: "300"
+      - key: POLL_JITTER_SECONDS
+        value: "15"
+
+      # ── seen_ids persistence (recommended on free dynos) ──────────────────
+      # Fine-grained PAT with Contents: Read/Write on this repo.
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_BRANCH
+        value: main
+      - key: GITHUB_SEEN_IDS_PATH
+        value: data/seen_ids.json
