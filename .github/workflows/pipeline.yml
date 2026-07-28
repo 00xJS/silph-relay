@@ -2,11 +2,15 @@ name: PokeUpdates Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # Every 30 minutes
+    - cron: "*/5 * * * *"    # Every 5 minutes (GitHub Actions' minimum interval)
   workflow_dispatch:          # Allow manual trigger from GitHub UI
 
 permissions:
   contents: write             # Needed to commit seen_ids.json back to the repo
+
+concurrency:
+  group: pokeupdates-bot      # Never overlap runs — each one pushes to the repo
+  cancel-in-progress: false
 
 jobs:
   post-updates:
@@ -22,14 +26,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run bot
         env:
-          RSSHUB_URL:           ${{ secrets.RSSHUB_URL }}
-          DISCORD_WEBHOOK_URL:  ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RSSHUB_URL:                    ${{ secrets.RSSHUB_URL }}
+          DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL_RESTOCKS:  ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
         run: python src/main.py
 
       - name: Commit updated seen_ids.json

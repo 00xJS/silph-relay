@@ -6,27 +6,32 @@ A lightweight Discord bot that monitors Pokémon GO community accounts on X and 
 
 ## What It Does
 
-Silph Relay watches three accounts:
+Silph Relay watches five accounts, split across two Discord channels:
 
+**Pokémon GO channel** (`DISCORD_WEBHOOK_URL`):
 - **@PokemonGoApp** — official Pokémon GO announcements
 - **@LeekDuck** — event calendars, raid infographics, and datamines
 - **@thepokemodgroup** — asset updates and community datamines
 
-Every 30 minutes, it checks for new posts and forwards them to your Discord channel with the full post text and all attached images. Already-seen posts are tracked so nothing gets double-posted.
+**TCG restocks & deals channel** (`DISCORD_WEBHOOK_URL_RESTOCKS`):
+- **@pokemonrestocks** — Pokémon TCG restock alerts
+- **@PokemonDealsTCG** — Pokémon TCG deals
+
+Every 5 minutes, it checks for new posts and forwards them to the right Discord channel with the full post text and all attached images. Already-seen posts are tracked so nothing gets double-posted, and each account is capped at 5 posts per run so a newly added account's backlog never floods a channel.
 
 ---
 
 ## How It Works
 
 ```
-RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhook
+RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
                                   ↕
                            tracker (seen_ids.json)
 ```
 
-1. **RSSHub** scrapes the three X accounts and serves them as RSS feeds
-2. **fetcher.py** pulls the feeds, filters out already-seen posts, and downloads any images
-3. **discord_poster.py** sends each new post to Discord via webhook with images attached
+1. **RSSHub** scrapes the tracked X accounts and serves them as RSS feeds
+2. **fetcher.py** pulls all feeds in parallel, filters out already-seen posts, and downloads any images
+3. **discord_poster.py** sends each new post to its account's Discord webhook with images attached
 4. **seen_ids.json** is committed back to the repo after each run to persist deduplication across GitHub Actions runs
 
 ---
@@ -34,9 +39,9 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhook
 ## Stack
 
 - Python 3.11
-- GitHub Actions (runs on a 30-minute cron schedule)
+- GitHub Actions (runs on a 5-minute cron schedule)
 - RSSHub (self-hosted on Render — free tier)
-- Discord Webhook
+- Discord Webhooks (one per channel)
 
 ---
 
@@ -69,6 +74,7 @@ Fill in your `.env`:
 ```
 RSSHUB_URL=https://your-rsshub-instance.onrender.com
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+DISCORD_WEBHOOK_URL_RESTOCKS=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 ```
 
 **4. Add GitHub Secrets**
@@ -76,10 +82,11 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 In your repo: Settings → Secrets and variables → Actions → add:
 - `RSSHUB_URL`
 - `DISCORD_WEBHOOK_URL`
+- `DISCORD_WEBHOOK_URL_RESTOCKS`
 
 **5. Enable GitHub Actions**
 
-Go to the Actions tab → PokeUpdates Bot → Run workflow to trigger a manual test. If successful, it will run automatically every 30 minutes from that point on.
+Go to the Actions tab → PokeUpdates Bot → Run workflow to trigger a manual test. If successful, it will run automatically every 5 minutes from that point on.
 
 ---
 

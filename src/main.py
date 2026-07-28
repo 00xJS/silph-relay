@@ -16,15 +16,18 @@ def main():
     seen_ids = load_seen_ids()
     print(f"[main] {len(seen_ids)} post IDs already seen")
 
-    posts = fetch_all(seen_ids)
+    posts, skip_ids = fetch_all(seen_ids)
     print(f"[main] {len(posts)} new posts to publish")
 
     if not posts:
+        if skip_ids:
+            save_seen_ids(seen_ids | skip_ids)
         print("[main] Nothing new — done.")
         return
 
-    posted_ids = set()
-    failed     = 0
+    posted_ids       = set()
+    unconfigured_ids = set()
+    failed           = 0
 
     for post in posts:
         account_name = post["account"]["display"]
@@ -35,6 +38,10 @@ def main():
         if success:
             posted_ids.add(post["id"])
             print(f"  [main] ✓ Posted")
+        elif success is None:
+            # No webhook configured for this account — leave unseen so it
+            # posts once the secret is added
+            unconfigured_ids.add(post["id"])
         else:
             failed += 1
             print(f"  [main] ✗ Failed")
@@ -49,10 +56,11 @@ def main():
         # Small delay to avoid hitting Discord rate limits
         time.sleep(1)
 
-    # Save all new IDs (posted + failed) so we don't retry failed posts indefinitely
-    save_seen_ids(seen_ids | {p["id"] for p in posts})
+    # Save all new IDs (posted + failed) so we don't retry failed posts
+    # indefinitely — but keep unconfigured-webhook posts retryable
+    save_seen_ids((seen_ids | {p["id"] for p in posts} | skip_ids) - unconfigured_ids)
 
-    print(f"\n[main] Done — {len(posted_ids)} posted, {failed} failed")
+    print(f"\n[main] Done — {len(posted_ids)} posted, {failed} failed, {len(unconfigured_ids)} awaiting webhook config")
 
 
 if __name__ == "__main__":

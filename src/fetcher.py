@@ -4,6 +4,7 @@ import re
 import os
 import json
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,10 +12,17 @@ load_dotenv()
 
 RSSHUB_URL = os.getenv("RSSHUB_URL", "").rstrip("/")
 
+# Cap on posts relayed per account per run. Overflow (older entries) is marked
+# seen without posting — prevents a newly added account's whole feed history
+# from flooding the channel on its first run.
+MAX_NEW_POSTS_PER_RUN = int(os.getenv("MAX_NEW_POSTS_PER_RUN", "5"))
+
 ACCOUNTS = [
-    {"handle": "PokemonGoApp",    "display": "@PokemonGoApp",    "color": 0xEE1515},
-    {"handle": "LeekDuck",        "display": "@LeekDuck",        "color": 0x5B8C3E},
-    {"handle": "thepokemodgroup", "display": "@thepokemodgroup", "color": 0x5865F2},
+    {"handle": "PokemonGoApp",    "display": "@PokemonGoApp",    "color": 0xEE1515, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "LeekDuck",        "display": "@LeekDuck",        "color": 0x5B8C3E, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "thepokemodgroup", "display": "@thepokemodgroup", "color": 0x5865F2, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "pokemonrestocks", "display": "@pokemonrestocks", "color": 0xFF6B35, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
+    {"handle": "PokemonDealsTCG", "display": "@PokemonDealsTCG", "color": 0x3B4CCA, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
 ]
 
 
@@ -70,10 +78,11 @@ def warmup():
 
 
 def fetch_account(account, seen_ids):
-    """Fetch new posts for a single account. Returns list of post dicts."""
-    handle  = account["handle"]
-    url     = f"{RSSHUB_URL}/twitter/user/{handle}"
-    posts   = []
+    """Fetch new posts for a single account. Returns (posts, skip_ids)."""
+    handle   = account["handle"]
+    url      = f"{RSSHUB_URL}/twitter/user/{handle}"
+    posts    = []
+    skip_ids = set()
 
     print(f"  [fetcher] Fetching {account['display']} — {url}")
     try:
@@ -81,21 +90,27 @@ def fetch_account(account, seen_ids):
         r.raise_for_status()
     except requests.exceptions.Timeout:
         print(f"  [fetcher] Timeout fetching {handle}")
-        return []
+        return [], set()
     except requests.exceptions.RequestException as e:
         print(f"  [fetcher] Request failed for {handle}: {e}")
-        return []
+        return [], set()
 
     feed = feedparser.parse(r.content)
     if not feed.entries:
         print(f"  [fetcher] No entries for {handle}")
-        return []
+        return [], set()
 
     skipped = 0
     for entry in feed.entries:
         post_id = entry.get("id", entry.get("link", "")).strip()
         if not post_id or post_id in seen_ids:
             skipped += 1
+            continue
+
+        # Entries are newest-first, so overflow beyond the cap is the older
+        # backlog — mark it seen without posting.
+        if len(posts) >= MAX_NEW_POSTS_PER_RUN:
+            skip_ids.add(post_id)
             continue
 
         description = entry.get("summary", entry.get("description", ""))
@@ -118,15 +133,23 @@ def fetch_account(account, seen_ids):
             "images":    local_images,  # list of (tmp_path, filename)
         })
 
-    new_count = len(posts)
-    print(f"  [fetcher] {account['display']}: {new_count} new, {skipped} already seen")
-    return posts
+    summary = f"  [fetcher] {account['display']}: {len(posts)} new, {skipped} already seen"
+    if skip_ids:
+        summary += f", {len(skip_ids)} older backlog marked seen"
+    print(summary)
+    return posts, skip_ids
 
 
 def fetch_all(seen_ids):
-    """Fetch new posts from all tracked accounts."""
+    """Fetch new posts from all tracked accounts in parallel.
+
+    Returns (posts, skip_ids) — skip_ids are backlog entries to mark seen
+    without posting.
+    """
     warmup()
-    all_posts = []
-    for account in ACCOUNTS:
-        all_posts.extend(fetch_account(account, seen_ids))
-    return all_posts
+    all_posts, skip_ids = [], set()
+    with ThreadPoolExecutor(max_workers=len(ACCOUNTS)) as pool:
+        for posts, skips in pool.map(lambda acc: fetch_account(acc, seen_ids), ACCOUNTS):
+            all_posts.extend(posts)
+            skip_ids |= skips
+    return all_posts, skip_ids
