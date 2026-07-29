@@ -40,7 +40,7 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 
 - Python 3.11
 - GitHub Actions, triggered every few minutes by [cron-job.org](https://cron-job.org) via `workflow_dispatch` (GitHub's own cron is best-effort and kept only as a 15-minute backstop)
-- RSSHub (self-hosted on a Hugging Face Space — free; see `hf-space/`)
+- RSSHub (a public instance works out of the box; self-hosting is an optional upgrade for fresher feeds)
 - Discord Webhooks (one per channel)
 
 ---
@@ -48,16 +48,16 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 ## Self-Hosting
 
 ### Requirements
-- A [Hugging Face](https://huggingface.co) account (free) to host RSSHub
+- An RSSHub instance URL (a public instance works; self-hosting is optional)
 - A [cron-job.org](https://cron-job.org) account (free) to trigger the pipeline reliably
 - A Discord server with a webhook URL
 - A GitHub account to host and run the bot
 
 ### Setup
 
-**1. Deploy RSSHub on a Hugging Face Space**
+**1. Choose an RSSHub instance**
 
-Create a new Space (type: Docker, blank template, free CPU hardware), upload the two files from `hf-space/`, and set the secrets/variables listed in `hf-space/README.md`. Your feed URL base is `https://<username>-<space-name>.hf.space`.
+The bot reads X feeds through [RSSHub](https://github.com/DIYgod/RSSHub). A public instance works with zero setup. Self-hosting (any container host) is an optional upgrade that buys fresher feeds (`CACHE_EXPIRE=60`) and your own auth tokens — if you do, set an `ACCESS_KEY` on the instance and mirror it in the `RSSHUB_ACCESS_KEY` secret below.
 
 **2. Create a Discord Webhook**
 
@@ -82,7 +82,7 @@ DISCORD_WEBHOOK_URL_RESTOCKS=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 
 In your repo: Settings → Secrets and variables → Actions → add:
 - `RSSHUB_URL`
-- `RSSHUB_ACCESS_KEY` (same value as the Space's `ACCESS_KEY` secret)
+- `RSSHUB_ACCESS_KEY` (optional — only if your self-hosted instance sets `ACCESS_KEY`)
 - `DISCORD_WEBHOOK_URL`
 - `DISCORD_WEBHOOK_URL_RESTOCKS`
 
@@ -107,7 +107,6 @@ silph-relay/
 │   └── seen_ids.json     # Tracks which posts have already been relayed
 ├── .github/workflows/
 │   └── pipeline.yml      # GitHub Actions run config (dispatch-triggered)
-├── hf-space/             # Files for the RSSHub Hugging Face Space
 ├── .env.example
 └── requirements.txt
 ```
