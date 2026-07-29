@@ -17,7 +17,7 @@ Silph Relay watches five accounts, split across two Discord channels:
 - **@pokemonrestocks** — Pokémon TCG restock alerts
 - **@PokemonDealsTCG** — Pokémon TCG deals
 
-Every 5 minutes, it checks for new posts and forwards them to the right Discord channel with the full post text and all attached images. Already-seen posts are tracked so nothing gets double-posted, and each account is capped at 5 posts per run so a newly added account's backlog never floods a channel.
+Every few minutes, it checks for new posts and forwards them to the right Discord channel with the full post text and all attached images. Already-seen posts are tracked so nothing gets double-posted, and each account is capped at 5 posts per run so a newly added account's backlog never floods a channel.
 
 ---
 
@@ -39,8 +39,8 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 ## Stack
 
 - Python 3.11
-- GitHub Actions (runs on a 5-minute cron schedule)
-- RSSHub (self-hosted on Render — free tier)
+- GitHub Actions, triggered every few minutes by [cron-job.org](https://cron-job.org) via `workflow_dispatch` (GitHub's own cron is best-effort and kept only as a 15-minute backstop)
+- RSSHub (self-hosted on a Hugging Face Space — free; see `hf-space/`)
 - Discord Webhooks (one per channel)
 
 ---
@@ -48,15 +48,16 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 ## Self-Hosting
 
 ### Requirements
-- A [Render](https://render.com) account (free) to host RSSHub
+- A [Hugging Face](https://huggingface.co) account (free) to host RSSHub
+- A [cron-job.org](https://cron-job.org) account (free) to trigger the pipeline reliably
 - A Discord server with a webhook URL
 - A GitHub account to host and run the bot
 
 ### Setup
 
-**1. Deploy RSSHub on Render**
+**1. Deploy RSSHub on a Hugging Face Space**
 
-Create a new Web Service on Render pointing to `https://github.com/DIYgod/RSSHub`. Free tier works. Copy the URL it gives you.
+Create a new Space (type: Docker, blank template, free CPU hardware), upload the two files from `hf-space/`, and set the secrets/variables listed in `hf-space/README.md`. Your feed URL base is `https://<username>-<space-name>.hf.space`.
 
 **2. Create a Discord Webhook**
 
@@ -81,12 +82,15 @@ DISCORD_WEBHOOK_URL_RESTOCKS=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 
 In your repo: Settings → Secrets and variables → Actions → add:
 - `RSSHUB_URL`
+- `RSSHUB_ACCESS_KEY` (same value as the Space's `ACCESS_KEY` secret)
 - `DISCORD_WEBHOOK_URL`
 - `DISCORD_WEBHOOK_URL_RESTOCKS`
 
-**5. Enable GitHub Actions**
+**5. Set up the trigger**
 
-Go to the Actions tab → PokeUpdates Bot → Run workflow to trigger a manual test. If successful, it will run automatically every 5 minutes from that point on.
+GitHub's own cron is best-effort (often hours late), so the pipeline is fired externally: create a free [cron-job.org](https://cron-job.org) job that POSTs to
+`https://api.github.com/repos/<you>/<repo>/actions/workflows/pipeline.yml/dispatches`
+with body `{"ref":"main"}` and an `Authorization: Bearer <fine-grained PAT>` header (PAT scope: this repo only, Actions read/write), every 3–5 minutes. Test first from the Actions tab → PokeUpdates Bot → Run workflow.
 
 ---
 
@@ -102,7 +106,8 @@ silph-relay/
 ├── data/
 │   └── seen_ids.json     # Tracks which posts have already been relayed
 ├── .github/workflows/
-│   └── pipeline.yml      # GitHub Actions schedule and run config
+│   └── pipeline.yml      # GitHub Actions run config (dispatch-triggered)
+├── hf-space/             # Files for the RSSHub Hugging Face Space
 ├── .env.example
 └── requirements.txt
 ```

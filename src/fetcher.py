@@ -10,7 +10,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-RSSHUB_URL = os.getenv("RSSHUB_URL", "").rstrip("/")
+RSSHUB_URL        = os.getenv("RSSHUB_URL", "").rstrip("/")
+RSSHUB_ACCESS_KEY = os.getenv("RSSHUB_ACCESS_KEY", "")
+
+# Server-side feed size cap — smaller responses, less bandwidth per poll
+FEED_LIMIT = int(os.getenv("FEED_LIMIT", "5"))
 
 # Cap on posts relayed per account per run. Overflow (older entries) is marked
 # seen without posting — prevents a newly added account's whole feed history
@@ -80,11 +84,14 @@ def warmup():
 def fetch_account(account, seen_ids):
     """Fetch new posts for a single account. Returns (posts, skip_ids)."""
     handle   = account["handle"]
-    url      = f"{RSSHUB_URL}/twitter/user/{handle}"
+    url      = f"{RSSHUB_URL}/twitter/user/{handle}?limit={FEED_LIMIT}"
     posts    = []
     skip_ids = set()
 
-    print(f"  [fetcher] Fetching {account['display']} — {url}")
+    # Don't log the full URL — it may carry the access key
+    print(f"  [fetcher] Fetching {account['display']} — {RSSHUB_URL}/twitter/user/{handle}")
+    if RSSHUB_ACCESS_KEY:
+        url += f"&key={RSSHUB_ACCESS_KEY}"
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45, allow_redirects=True)
         r.raise_for_status()

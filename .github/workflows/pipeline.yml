@@ -2,8 +2,8 @@ name: PokeUpdates Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"    # Every 5 minutes (GitHub Actions' minimum interval)
-  workflow_dispatch:          # Allow manual trigger from GitHub UI
+    - cron: "*/15 * * * *"   # Backstop only — GitHub's cron is best-effort and often hours late
+  workflow_dispatch:          # PRIMARY trigger: cron-job.org calls this via the GitHub API every few minutes
 
 permissions:
   contents: write             # Needed to commit seen_ids.json back to the repo
@@ -34,6 +34,7 @@ jobs:
       - name: Run bot
         env:
           RSSHUB_URL:                    ${{ secrets.RSSHUB_URL }}
+          RSSHUB_ACCESS_KEY:             ${{ secrets.RSSHUB_ACCESS_KEY }}
           DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL_RESTOCKS:  ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
         run: python src/main.py

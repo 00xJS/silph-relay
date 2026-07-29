@@ -5,6 +5,9 @@ credentials/
 # Local historic snapshot (pre-webhook-split version, kept for rollback)
 silph-1.0/
 
+# Local dev context/history — never upload
+handoff.md
+
 # Local image/data cache
 data/images/
 
