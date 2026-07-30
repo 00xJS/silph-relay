@@ -24,13 +24,14 @@ Every few minutes, it checks for new posts and forwards them to the right Discor
 ## How It Works
 
 ```
-RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
-                                  ↕
-                           tracker (seen_ids.json)
+FxTwitter API (primary) ──┐
+RSSHub feed  (fallback) ──┴→ fetcher.py → discord_poster.py → Discord webhooks
+                                       ↕
+                                tracker (seen_ids.json)
 ```
 
-1. **RSSHub** scrapes the tracked X accounts and serves them as RSS feeds
-2. **fetcher.py** pulls all feeds in parallel, filters out already-seen posts, and downloads any images
+1. **fetcher.py** pulls each account's recent posts (all accounts in parallel) from [FxTwitter's](https://docs.fxembed.com) free no-auth JSON API, automatically falling back to an RSSHub feed if that fails
+2. Already-seen posts (matched by numeric status ID), replies to other accounts, and stale posts (>24h) are filtered out; images are downloaded
 3. **discord_poster.py** sends each new post to its account's Discord webhook with images attached
 4. **seen_ids.json** is committed back to the repo after each run to persist deduplication across GitHub Actions runs
 
@@ -40,7 +41,8 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 
 - Python 3.11
 - GitHub Actions, triggered every few minutes by [cron-job.org](https://cron-job.org) via `workflow_dispatch` (GitHub's own cron is best-effort and kept only as a 15-minute backstop)
-- RSSHub (a public instance works out of the box; self-hosting is an optional upgrade for fresher feeds)
+- FxTwitter API (free, no auth — primary post source)
+- RSSHub (automatic fallback; a public instance works out of the box)
 - Discord Webhooks (one per channel)
 
 ---
@@ -48,16 +50,16 @@ RSSHub (self-hosted) → fetcher.py → discord_poster.py → Discord webhooks
 ## Self-Hosting
 
 ### Requirements
-- An RSSHub instance URL (a public instance works; self-hosting is optional)
 - A [cron-job.org](https://cron-job.org) account (free) to trigger the pipeline reliably
 - A Discord server with a webhook URL
 - A GitHub account to host and run the bot
+- Optional: an RSSHub instance URL for the fallback path
 
 ### Setup
 
-**1. Choose an RSSHub instance**
+**1. Post sources — nothing to configure**
 
-The bot reads X feeds through [RSSHub](https://github.com/DIYgod/RSSHub). A public instance works with zero setup. Self-hosting (any container host) is an optional upgrade that buys fresher feeds (`CACHE_EXPIRE=60`) and your own auth tokens — if you do, set an `ACCESS_KEY` on the instance and mirror it in the `RSSHUB_ACCESS_KEY` secret below.
+Posts come from [FxTwitter's](https://docs.fxembed.com) free JSON API by default: no key, no account, no setup. Optionally set `RSSHUB_URL` (a public [RSSHub](https://github.com/DIYgod/RSSHub) instance works) as an automatic fallback source — and if you self-host RSSHub with an `ACCESS_KEY`, mirror it in the `RSSHUB_ACCESS_KEY` secret.
 
 **2. Create a Discord Webhook**
 
