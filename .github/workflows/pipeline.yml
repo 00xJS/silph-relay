@@ -44,5 +44,10 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/seen_ids.json
-          git diff --cached --quiet || git commit -m "chore: update seen post IDs [skip ci]"
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update seen post IDs [skip ci]"
+            # Rebase in case anything landed on main mid-run — losing this
+            # push would un-mark posted tweets and cause duplicates
+            git pull --rebase origin main
+            git push
+          fi
