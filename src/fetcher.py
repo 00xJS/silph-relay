@@ -37,6 +37,7 @@ ACCOUNTS = [
     {"handle": "PokemonGoApp",    "display": "@PokemonGoApp",    "color": 0xEE1515, "webhook_env": "DISCORD_WEBHOOK_URL"},
     {"handle": "LeekDuck",        "display": "@LeekDuck",        "color": 0x5B8C3E, "webhook_env": "DISCORD_WEBHOOK_URL"},
     {"handle": "thepokemodgroup", "display": "@thepokemodgroup", "color": 0x5865F2, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "ScopelyExplore",  "display": "@ScopelyExplore",  "color": 0x8E44AD, "webhook_env": "DISCORD_WEBHOOK_URL"},
     {"handle": "pokemonrestocks", "display": "@pokemonrestocks", "color": 0xFF6B35, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
     {"handle": "PokemonDealsTCG", "display": "@PokemonDealsTCG", "color": 0x3B4CCA, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
 ]

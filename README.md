@@ -6,12 +6,13 @@ A lightweight Discord bot that monitors Pokémon GO community accounts on X and 
 
 ## What It Does
 
-Silph Relay watches five accounts, split across two Discord channels:
+Silph Relay watches six accounts, split across two Discord channels:
 
 **Pokémon GO channel** (`DISCORD_WEBHOOK_URL`):
 - **@PokemonGoApp** — official Pokémon GO announcements
 - **@LeekDuck** — event calendars, raid infographics, and datamines
 - **@thepokemodgroup** — asset updates and community datamines
+- **@ScopelyExplore** — Scopely service updates and known-issue notices
 
 **TCG restocks & deals channel** (`DISCORD_WEBHOOK_URL_RESTOCKS`):
 - **@pokemonrestocks** — Pokémon TCG restock alerts
