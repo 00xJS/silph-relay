@@ -21,6 +21,14 @@ RSSHUB_ACCESS_KEY = os.getenv("RSSHUB_ACCESS_KEY", "")
 FX_API_BASE = os.getenv("FX_API_BASE", "https://api.fxtwitter.com").rstrip("/")
 FEED_SOURCE = os.getenv("FEED_SOURCE", "auto").lower()
 
+# FxTwitter asks callers to identify themselves — an empty UA is rejected, and
+# generic ones risk being blocked (we share GitHub runner egress IPs with
+# everyone else on the 1000 req/min/IP budget).
+USER_AGENT = os.getenv(
+    "USER_AGENT", "silph-relay/1.0 (+https://github.com/00xJS/silph-relay)"
+)
+HEADERS = {"User-Agent": USER_AGENT}
+
 # Server-side feed size cap for the RSSHub path — smaller responses
 FEED_LIMIT = int(os.getenv("FEED_LIMIT", "5"))
 
@@ -33,13 +41,15 @@ MAX_NEW_POSTS_PER_RUN = int(os.getenv("MAX_NEW_POSTS_PER_RUN", "5"))
 # posts (deep feed history, outage backlogs) are marked seen silently.
 MAX_POST_AGE_HOURS = float(os.getenv("MAX_POST_AGE_HOURS", "24"))
 
+# user_id is X's numeric account ID. Fetching by ID skips a handle->ID lookup
+# on FxTwitter's side (~120ms) and survives handle renames.
 ACCOUNTS = [
-    {"handle": "PokemonGoApp",    "display": "@PokemonGoApp",    "color": 0xEE1515, "webhook_env": "DISCORD_WEBHOOK_URL"},
-    {"handle": "LeekDuck",        "display": "@LeekDuck",        "color": 0x5B8C3E, "webhook_env": "DISCORD_WEBHOOK_URL"},
-    {"handle": "thepokemodgroup", "display": "@thepokemodgroup", "color": 0x5865F2, "webhook_env": "DISCORD_WEBHOOK_URL"},
-    {"handle": "ScopelyExplore",  "display": "@ScopelyExplore",  "color": 0x8E44AD, "webhook_env": "DISCORD_WEBHOOK_URL"},
-    {"handle": "pokemonrestocks", "display": "@pokemonrestocks", "color": 0xFF6B35, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
-    {"handle": "PokemonDealsTCG", "display": "@PokemonDealsTCG", "color": 0x3B4CCA, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
+    {"handle": "PokemonGoApp",    "user_id": "2839430431",          "display": "@PokemonGoApp",    "color": 0xEE1515, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "LeekDuck",        "user_id": "840992778020630531",  "display": "@LeekDuck",        "color": 0x5B8C3E, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "thepokemodgroup", "user_id": "1702466937928732672", "display": "@thepokemodgroup", "color": 0x5865F2, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "ScopelyExplore",  "user_id": "849344094681870336",  "display": "@ScopelyExplore",  "color": 0x8E44AD, "webhook_env": "DISCORD_WEBHOOK_URL"},
+    {"handle": "pokemonrestocks", "user_id": "1327781541624377344", "display": "@pokemonrestocks", "color": 0xFF6B35, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
+    {"handle": "PokemonDealsTCG", "user_id": "1411405148006404096", "display": "@PokemonDealsTCG", "color": 0x3B4CCA, "webhook_env": "DISCORD_WEBHOOK_URL_RESTOCKS"},
 ]
 
 # Tweet URLs vary by source (twitter.com vs x.com, handle casing), so dedupe
@@ -76,10 +86,24 @@ def extract_image_urls(description):
     return result
 
 
+def download_images(urls):
+    """Download images concurrently. Returns a list of (path, filename)."""
+    urls = list(urls)
+    if not urls:
+        return []
+    if len(urls) == 1:
+        path, name = download_image(urls[0])
+        return [(path, name)] if path else []
+
+    with ThreadPoolExecutor(max_workers=min(len(urls), 4)) as pool:
+        results = list(pool.map(download_image, urls))
+    return [(p, n) for p, n in results if p]
+
+
 def download_image(url):
     """Download an image to a temp file. Returns (path, filename) or (None, None)."""
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
 
         ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
@@ -98,7 +122,7 @@ def download_image(url):
 def warmup():
     """Ping RSSHub so a sleeping host wakes up before we start fetching."""
     try:
-        requests.get(RSSHUB_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+        requests.get(RSSHUB_URL, headers=HEADERS, timeout=30)
         print("  [fetcher] RSSHub warmed up")
     except Exception:
         print("  [fetcher] Warm-up ping failed — continuing anyway")
@@ -110,11 +134,12 @@ def fetch_account_fx(account, seen_nums):
     Returns (posts, skip_ids), or None on failure so the caller can fall back.
     """
     handle = account["handle"]
-    url    = f"{FX_API_BASE}/2/profile/{handle}/statuses"
+    target = f"id:{account['user_id']}" if account.get("user_id") else handle
+    url    = f"{FX_API_BASE}/2/profile/{target}/statuses"
 
     print(f"  [fetcher] Fetching {account['display']} — {url}")
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         data = r.json()
     except Exception as e:
@@ -161,11 +186,7 @@ def fetch_account_fx(account, seen_nums):
         media      = st.get("media") or {}
         photo_urls = [p.get("url") for p in (media.get("photos") or []) if p.get("url")]
 
-        local_images = []
-        for img_url in photo_urls:
-            path, name = download_image(clean_image_url(img_url))
-            if path:
-                local_images.append((path, name))
+        local_images = download_images(clean_image_url(u) for u in photo_urls)
 
         posts.append({
             "id":        post_url,
@@ -196,7 +217,7 @@ def fetch_account_rsshub(account, seen_ids, seen_nums):
         url += f"&key={RSSHUB_ACCESS_KEY}"
 
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=45, allow_redirects=True)
+        r = requests.get(url, headers=HEADERS, timeout=45, allow_redirects=True)
         r.raise_for_status()
     except requests.exceptions.Timeout:
         print(f"  [fetcher] Timeout fetching {handle}")
@@ -225,14 +246,7 @@ def fetch_account_rsshub(account, seen_ids, seen_nums):
 
         description = entry.get("summary", entry.get("description", ""))
         plain_text  = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', description)).strip()
-        image_urls  = extract_image_urls(description)
-
-        # Download images to temp files
-        local_images = []
-        for img_url in image_urls:
-            path, name = download_image(img_url)
-            if path:
-                local_images.append((path, name))
+        local_images = download_images(extract_image_urls(description))
 
         posts.append({
             "id":        post_id,

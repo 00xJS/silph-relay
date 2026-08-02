@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 
 # Allow running from repo root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -25,9 +24,9 @@ def main():
         print("[main] Nothing new — done.")
         return
 
-    posted_ids       = set()
-    unconfigured_ids = set()
-    failed           = 0
+    posted_ids = set()
+    retry_ids  = set()
+    failed     = 0
 
     for post in posts:
         account_name = post["account"]["display"]
@@ -39,9 +38,10 @@ def main():
             posted_ids.add(post["id"])
             print(f"  [main] ✓ Posted")
         elif success is None:
-            # No webhook configured for this account — leave unseen so it
-            # posts once the secret is added
-            unconfigured_ids.add(post["id"])
+            # Not delivered (no webhook configured, rate limited, network
+            # error) — leave unseen so a later run retries it
+            retry_ids.add(post["id"])
+            print(f"  [main] … Deferred — will retry next run")
         else:
             failed += 1
             print(f"  [main] ✗ Failed")
@@ -53,14 +53,12 @@ def main():
             except Exception:
                 pass
 
-        # Small delay to avoid hitting Discord rate limits
-        time.sleep(1)
+    # Mark posted + permanently-failed IDs as seen so we don't retry those
+    # forever; deferred posts stay unseen and are picked up next run.
+    # Pacing between sends is handled inside discord_poster.
+    save_seen_ids((seen_ids | {p["id"] for p in posts} | skip_ids) - retry_ids)
 
-    # Save all new IDs (posted + failed) so we don't retry failed posts
-    # indefinitely — but keep unconfigured-webhook posts retryable
-    save_seen_ids((seen_ids | {p["id"] for p in posts} | skip_ids) - unconfigured_ids)
-
-    print(f"\n[main] Done — {len(posted_ids)} posted, {failed} failed, {len(unconfigured_ids)} awaiting webhook config")
+    print(f"\n[main] Done — {len(posted_ids)} posted, {failed} failed, {len(retry_ids)} deferred")
 
 
 if __name__ == "__main__":

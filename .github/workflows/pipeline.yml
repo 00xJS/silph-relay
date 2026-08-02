@@ -14,7 +14,10 @@ concurrency:
 
 jobs:
   post-updates:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # A hung run would hold the concurrency group and stall every later
+    # dispatch — fail fast instead
+    timeout-minutes: 3
 
     steps:
       - name: Checkout repo
