@@ -2,6 +2,12 @@
   # Static single-file dashboard — nothing to compile.
   publish = "dashboard"
 
+  # The relay commits data/ many times a day. Those commits must NOT trigger a
+  # rebuild: the page reads its data at runtime from GitHub, so the deployed
+  # files are identical either way. Build only when the site itself changes.
+  # (exit 0 = nothing changed = skip the build; non-zero = build)
+  ignore = "git diff --quiet HEAD^ HEAD -- dashboard netlify.toml"
+
 [[headers]]
   for = "/*"
   [headers.values]
