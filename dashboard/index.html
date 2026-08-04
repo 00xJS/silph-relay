@@ -277,9 +277,10 @@ footer {
   </div>
 
   <div class="controls">
-    <div class="seg" role="group" aria-label="Time granularity">
+    <div class="seg" role="group" aria-label="Time period">
       <button id="btn-week" aria-pressed="true">Weekly</button>
       <button id="btn-month" aria-pressed="false">Monthly</button>
+      <button id="btn-all" aria-pressed="false">All time</button>
     </div>
     <span class="panel__note" id="sel-note"></span>
     <span class="spacer"></span>
@@ -372,9 +373,11 @@ footer {
   // ---------------------------------------------------------------- state
   const state = {
     posts: [],            // { ts: Date, acct }
-    granularity: "week",  // "week" | "month"
+    scope: "week",        // "week" | "month" | "all" — what every panel reports on
+    granularity: "week",  // timeline bucket size: "week" | "month" ("all" buckets monthly)
     hidden: new Set(),    // account keys hidden via legend
-    selected: null,       // selected bucket key, or null for "all"
+    selected: null,       // focused bucket key; null means the whole span
+    pinned: false,        // true once the user picks a period by hand
     fetchedAt: null,
     error: null,
   };
@@ -463,6 +466,34 @@ footer {
       else cur.setMonth(cur.getMonth() + 1);
     }
     return out;
+  }
+
+  /** Bucket key of the most recent period that exists in the data. */
+  function latestBucketKey() {
+    if (!state.posts.length) return null;
+    return bucketKey(state.posts[state.posts.length - 1].ts);
+  }
+
+  /** The bucket immediately before `key` (same granularity). */
+  function prevBucketKey(key) {
+    const d = new Date(key + "T00:00:00");
+    if (state.granularity === "week") d.setDate(d.getDate() - 7);
+    else d.setMonth(d.getMonth() - 1);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** Days elapsed inside the reported period — never counts the future. */
+  function periodDays() {
+    const now = Date.now();
+    if (!state.selected) {
+      const first = state.posts[0].ts.getTime();
+      return Math.max(1, Math.ceil((Math.min(now, state.posts[state.posts.length - 1].ts.getTime()) - first) / 864e5));
+    }
+    const start = new Date(state.selected + "T00:00:00");
+    const end = new Date(start);
+    if (state.granularity === "week") end.setDate(end.getDate() + 7);
+    else end.setMonth(end.getMonth() + 1);
+    return Math.max(1, Math.ceil((Math.min(now, end.getTime()) - start.getTime()) / 864e5));
   }
 
   /** Earliest post per account — a proxy for when the relay started tracking it. */
@@ -569,10 +600,20 @@ footer {
       });
       hit.addEventListener("mouseleave", hideTooltip);
       hit.addEventListener("click", () => {
-        state.selected = state.selected === b.key ? null : b.key;
+        state.selected = b.key;
+        state.pinned = true;           // stop auto-following the newest period
+        if (state.scope === "all") { state.scope = "month"; syncScopeButtons(); }
         hideTooltip(); render();
       });
       svg.appendChild(hit);
+
+      // unmistakable marker for the period every other panel is reporting on
+      if (state.selected === b.key) {
+        svg.appendChild(svgEl("rect", {
+          x: cx - barW / 2, y: M.top + plotH + 3, width: barW, height: 2.5, rx: 1.25,
+          fill: cssVar("--accent"),
+        }));
+      }
 
       // stacked segments, 2px surface gap between them, 4px rounded top on the cap
       let acc = 0;
@@ -586,7 +627,6 @@ footer {
         svg.appendChild(svgEl("rect", {
           class: "seg-rect", x: cx - barW / 2, y: yTop, width: barW, height: h,
           rx: isCap ? Math.min(4, barW / 2) : 0, fill: colorOf(a),
-          opacity: state.selected && state.selected !== b.key ? 0.35 : 1,
         }));
         acc += v;
       });
@@ -764,39 +804,54 @@ footer {
       </table>`;
   }
 
+  /** Every tile reports on the period the controls are showing, not a fixed window. */
   function renderStats() {
     const host = document.getElementById("stats");
     const all = state.posts.filter((p) => !state.hidden.has(p.acct.key));
     if (!all.length) { host.innerHTML = ""; return; }
 
-    const now = new Date();
-    const weekStart = startOfWeek(now);
-    const prevWeekStart = new Date(weekStart); prevWeekStart.setDate(prevWeekStart.getDate() - 7);
-    const monthStart = startOfMonth(now);
+    const posts = selectedPosts();
+    const days = periodDays();
 
-    const thisWeek = all.filter((p) => p.ts >= weekStart).length;
-    const prevWeek = all.filter((p) => p.ts >= prevWeekStart && p.ts < weekStart).length;
-    const thisMonth = all.filter((p) => p.ts >= monthStart).length;
+    // headline label follows the scope
+    const periodLabel = !state.selected ? "Posts · all time"
+      : state.granularity === "week" ? "Posts · week" : "Posts · month";
+
+    // change vs. the equivalent previous period (only meaningful when focused)
+    let deltaHtml = !state.selected
+      ? `over ${days} days`
+      : fmtBucket(state.selected);
+    if (state.selected) {
+      const prevKey = prevBucketKey(state.selected);
+      const prevN = state.posts.filter(
+        (p) => !state.hidden.has(p.acct.key) && bucketKey(p.ts) === prevKey
+      ).length;
+      const unit = state.granularity === "week" ? "week" : "month";
+      if (prevN > 0) {
+        const delta = Math.round(((posts.length - prevN) / prevN) * 100);
+        deltaHtml = `<span class="delta ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta)}%</span> vs. prev ${unit}`;
+      } else {
+        deltaHtml = `no posts in prev ${unit}`;
+      }
+    }
 
     const totals = new Map();
-    for (const p of all) totals.set(p.acct.key, (totals.get(p.acct.key) || 0) + 1);
+    for (const p of posts) totals.set(p.acct.key, (totals.get(p.acct.key) || 0) + 1);
     let busiest = null;
     for (const a of visibleAccounts()) {
       const n = totals.get(a.key) || 0;
       if (!busiest || n > busiest.n) busiest = { acct: a, n };
     }
+    const activeCount = [...totals.values()].filter((n) => n > 0).length;
 
     const spanDays = Math.max(1, Math.ceil((all[all.length - 1].ts - all[0].ts) / 864e5));
-    const delta = prevWeek === 0 ? null : Math.round(((thisWeek - prevWeek) / prevWeek) * 100);
-    const deltaHtml = delta === null ? "vs. last week —"
-      : `<span class="delta ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta)}%</span> vs. last week`;
 
     host.innerHTML = `
-      <div class="stat"><div class="label">Total tracked</div><div class="value">${all.length}</div><div class="sub">over ${spanDays} days</div></div>
-      <div class="stat"><div class="label">This week</div><div class="value">${thisWeek}</div><div class="sub">${deltaHtml}</div></div>
-      <div class="stat"><div class="label">This month</div><div class="value">${thisMonth}</div><div class="sub">since ${monthStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div></div>
-      <div class="stat"><div class="label">Busiest account</div><div class="value" style="font-size:15px">${busiest.acct.label}</div><div class="sub">${busiest.n} posts</div></div>
-      <div class="stat"><div class="label">Average</div><div class="value">${(all.length / spanDays).toFixed(1)}</div><div class="sub">posts per day</div></div>`;
+      <div class="stat"><div class="label">${periodLabel}</div><div class="value">${posts.length}</div><div class="sub">${deltaHtml}</div></div>
+      <div class="stat"><div class="label">Per day</div><div class="value">${(posts.length / days).toFixed(1)}</div><div class="sub">across ${days} day${days === 1 ? "" : "s"}</div></div>
+      <div class="stat"><div class="label">Busiest account</div><div class="value" style="font-size:15px">${busiest && busiest.n ? busiest.acct.label : "—"}</div><div class="sub">${busiest && busiest.n ? busiest.n + " posts" : "no posts"}</div></div>
+      <div class="stat"><div class="label">Active accounts</div><div class="value">${activeCount}</div><div class="sub">of ${visibleAccounts().length} shown</div></div>
+      <div class="stat"><div class="label">All-time total</div><div class="value">${all.length}</div><div class="sub">over ${spanDays} days</div></div>`;
   }
 
   function renderChips() {
@@ -853,8 +908,10 @@ footer {
     const sel = document.getElementById("sel-note");
     const acct = document.getElementById("acct-note");
     const tbl = document.getElementById("table-note");
-    const scope = state.selected ? fmtBucketLong(state.selected) : "all time";
-    sel.textContent = state.selected ? `Showing ${scope} — click the column again to clear` : "Click a column to focus a period";
+    const scope = state.selected ? fmtBucketLong(state.selected) : "All time";
+    sel.textContent = state.selected
+      ? `${scope} — click any column to change period`
+      : "All time — click a column to focus one period";
     acct.textContent = scope;
     tbl.textContent = scope;
   }
@@ -877,21 +934,42 @@ footer {
       state.posts = await load({ bustCache });
       state.fetchedAt = new Date();
       state.error = null;
+      applyScope();   // follow the newest period unless the user pinned one
     } catch (err) {
       state.error = err.message || String(err);
     }
     render();
   }
 
-  document.getElementById("btn-week").addEventListener("click", () => setGranularity("week"));
-  document.getElementById("btn-month").addEventListener("click", () => setGranularity("month"));
-  function setGranularity(g) {
-    if (state.granularity === g) return;
-    state.granularity = g;
-    state.selected = null;
-    document.getElementById("btn-week").setAttribute("aria-pressed", String(g === "week"));
-    document.getElementById("btn-month").setAttribute("aria-pressed", String(g === "month"));
+  const SCOPES = { week: "btn-week", month: "btn-month", all: "btn-all" };
+  for (const [scope, id] of Object.entries(SCOPES)) {
+    document.getElementById(id).addEventListener("click", () => setScope(scope));
+  }
+
+  /**
+   * Weekly/Monthly focus the newest period so every panel reports on it;
+   * All time clears the focus. Timeline buckets monthly in "all" mode.
+   */
+  function setScope(scope) {
+    if (state.scope === scope) return;
+    state.scope = scope;
+    state.pinned = false;
+    applyScope();
+    syncScopeButtons();
     render();
+  }
+
+  /** Derive bucket size + focused period from the current scope. */
+  function applyScope() {
+    state.granularity = state.scope === "all" ? "month" : state.scope;
+    if (state.scope === "all") state.selected = null;
+    else if (!state.pinned || !state.selected) state.selected = latestBucketKey();
+  }
+
+  function syncScopeButtons() {
+    for (const [s, id] of Object.entries(SCOPES)) {
+      document.getElementById(id).setAttribute("aria-pressed", String(s === state.scope));
+    }
   }
 
   document.getElementById("btn-refresh").addEventListener("click", (e) => {
