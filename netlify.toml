@@ -1,0 +1,10 @@
+[build]
+  # Static single-file dashboard — nothing to compile.
+  publish = "dashboard"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

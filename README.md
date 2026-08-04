@@ -110,11 +110,29 @@ silph-relay/
 │   └── seen_ids.json     # Tracks which posts have already been relayed
 ├── .github/workflows/
 │   └── pipeline.yml      # GitHub Actions run config (dispatch-triggered)
+├── dashboard/
+│   └── index.html        # Feed analytics dashboard (static, deployed to Netlify)
+├── netlify.toml
 ├── .env.example
 └── requirements.txt
 ```
 
 ---
+
+## Dashboard
+
+`dashboard/index.html` is a static analytics page (deployed to Netlify) showing posting
+activity per account, bucketed by week or month, plus a weekday × hour activity heatmap.
+
+It is **completely decoupled from the relay**: the page runs entirely in the viewer's
+browser and reads the published `data/seen_ids.json` over GitHub's CDN. There is no
+build step, no server, no scheduled job, and nothing that writes to this repo — so a
+dashboard refresh can never delay or collide with a posting run.
+
+Every statistic is derived from the ledger itself, because each entry encodes what's
+needed: the account handle sits in the URL, and the numeric tweet ID is a
+[Snowflake](https://en.wikipedia.org/wiki/Snowflake_ID) whose high bits are the exact
+creation time (`created_ms = (id >> 22) + 1288834974657`). No API calls required.
 
 ## Deduplication
 
