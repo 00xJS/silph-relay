@@ -1,6 +1,8 @@
 # silph-relay
 
-A lightweight Discord bot that monitors Pokémon GO community accounts on X and automatically relays their posts — text and images — to a Discord channel. No manual reposting, no missed updates.
+A lightweight Discord bot that monitors Pokémon accounts on X and relays their posts — text and images — to Discord in under a minute. Pokémon GO news and Pokémon TCG restock alerts go to separate channels, so time-sensitive drops don't get buried. No manual reposting, no missed updates.
+
+Live dashboard: **[silph-relay.netlify.app](https://silph-relay.netlify.app/)**
 
 ---
 
