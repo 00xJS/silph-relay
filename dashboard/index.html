@@ -268,8 +268,7 @@ footer {
   <div class="kicker"><a href="https://observation-deck.netlify.app/">Observation Deck</a> / Silph Relay</div>
   <h1>Feed Analytics</h1>
   <p class="lede">
-    Posting activity for every X account the relay tracks, derived from the pipeline's own
-    dedup ledger. Read-only — this page never touches the relay.
+    How often each tracked X account posts, and how quickly those posts reach Discord.
   </p>
 
   <div class="chiprow" id="chiprow">
@@ -327,8 +326,8 @@ footer {
   </section>
 
   <footer>
-    <a href="https://observation-deck.netlify.app/">Observation Deck</a> |
-    JS |
+    <a href="https://observation-deck.netlify.app/">Observation Deck</a> ·
+    JS ·
     <a href="https://github.com/00xJS/silph-relay">GitHub</a>
   </footer>
 </div>
@@ -342,6 +341,7 @@ footer {
   // ---------------------------------------------------------------- config
   const REPO = "00xJS/silph-relay";
   const DATA_URL = `https://raw.githubusercontent.com/${REPO}/main/data/seen_ids.json`;
+  const DELIVERIES_URL = `https://raw.githubusercontent.com/${REPO}/main/data/deliveries.json`;
   const SNOWFLAKE_EPOCH = 1288834974657n;   // X's snowflake epoch
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
 
@@ -372,7 +372,8 @@ footer {
 
   // ---------------------------------------------------------------- state
   const state = {
-    posts: [],            // { ts: Date, acct }
+    posts: [],            // { ts: Date, acct, id }
+    deliveries: new Map(),// status id -> delivery time (ms), recorded by the relay
     scope: "week",        // "week" | "month" | "all" — what every panel reports on
     granularity: "week",  // timeline bucket size: "week" | "month" ("all" buckets monthly)
     hidden: new Set(),    // account keys hidden via legend
@@ -400,19 +401,38 @@ footer {
       const acct = byKey.get(m[1].toLowerCase()) || OTHER;
       const ms = timestampFromId(m[2]);
       if (!Number.isFinite(ms) || ms < 1e12) continue;
-      out.push({ ts: new Date(ms), acct });
+      out.push({ ts: new Date(ms), acct, id: m[2] });
     }
     out.sort((a, b) => a.ts - b.ts);
     return out;
   }
 
   async function load({ bustCache = false } = {}) {
-    const url = bustCache ? `${DATA_URL}?t=${Date.now()}` : DATA_URL;
-    const res = await fetch(url, { cache: bustCache ? "reload" : "default" });
-    if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
-    const ids = await res.json();
+    const bust = (u) => (bustCache ? `${u}?t=${Date.now()}` : u);
+    const opts = { cache: bustCache ? "reload" : "default" };
+
+    const [idsRes, delRes] = await Promise.all([
+      fetch(bust(DATA_URL), opts),
+      // Delivery times are a nice-to-have — a failure here must not blank the page
+      fetch(bust(DELIVERIES_URL), opts).catch(() => null),
+    ]);
+
+    if (!idsRes.ok) throw new Error(`GitHub returned HTTP ${idsRes.status}`);
+    const ids = await idsRes.json();
     if (!Array.isArray(ids)) throw new Error("Unexpected data shape");
-    return parse(ids);
+
+    let deliveries = new Map();
+    if (delRes && delRes.ok) {
+      try {
+        const rows = await delRes.json();
+        if (Array.isArray(rows)) {
+          deliveries = new Map(
+            rows.filter((r) => Array.isArray(r) && r.length === 2).map((r) => [String(r[0]), Number(r[1]) * 1000])
+          );
+        }
+      } catch { /* leave empty — the tile degrades to "—" */ }
+    }
+    return { posts: parse(ids), deliveries };
   }
 
   // ---------------------------------------------------------------- buckets
@@ -804,6 +824,29 @@ footer {
       </table>`;
   }
 
+  /**
+   * Tweet-published → landed-in-Discord, for posts in the current period.
+   * Reported as a median: a single stalled post shouldn't move the headline.
+   */
+  function notifyLatency(posts) {
+    const secs = [];
+    for (const p of posts) {
+      const delivered = state.deliveries.get(p.id);
+      if (!delivered) continue;
+      const s = (delivered - p.ts.getTime()) / 1000;
+      if (s > 0 && s < 24 * 3600) secs.push(s);
+    }
+    if (!secs.length) return null;
+    secs.sort((a, b) => a - b);
+    return { median: secs[Math.floor(secs.length / 2)], n: secs.length };
+  }
+
+  function fmtDuration(s) {
+    if (s < 60) return `${Math.round(s)}s`;
+    if (s < 3600) return `${(s / 60).toFixed(1)}m`;
+    return `${(s / 3600).toFixed(1)}h`;
+  }
+
   /** Every tile reports on the period the controls are showing, not a fixed window. */
   function renderStats() {
     const host = document.getElementById("stats");
@@ -844,14 +887,14 @@ footer {
     }
     const activeCount = [...totals.values()].filter((n) => n > 0).length;
 
-    const spanDays = Math.max(1, Math.ceil((all[all.length - 1].ts - all[0].ts) / 864e5));
+    const lat = notifyLatency(posts);
 
     host.innerHTML = `
       <div class="stat"><div class="label">${periodLabel}</div><div class="value">${posts.length}</div><div class="sub">${deltaHtml}</div></div>
-      <div class="stat"><div class="label">Per day</div><div class="value">${(posts.length / days).toFixed(1)}</div><div class="sub">across ${days} day${days === 1 ? "" : "s"}</div></div>
+      <div class="stat"><div class="label">Time to notify</div><div class="value">${lat ? fmtDuration(lat.median) : "—"}</div><div class="sub">${lat ? `median of ${lat.n} post${lat.n === 1 ? "" : "s"}` : "no timing data"}</div></div>
+      <div class="stat"><div class="label">Posts per day</div><div class="value">${(posts.length / days).toFixed(1)}</div><div class="sub">across ${days} day${days === 1 ? "" : "s"}</div></div>
       <div class="stat"><div class="label">Busiest account</div><div class="value" style="font-size:15px">${busiest && busiest.n ? busiest.acct.label : "—"}</div><div class="sub">${busiest && busiest.n ? busiest.n + " posts" : "no posts"}</div></div>
-      <div class="stat"><div class="label">Active accounts</div><div class="value">${activeCount}</div><div class="sub">of ${visibleAccounts().length} shown</div></div>
-      <div class="stat"><div class="label">All-time total</div><div class="value">${all.length}</div><div class="sub">over ${spanDays} days</div></div>`;
+      <div class="stat"><div class="label">Active accounts</div><div class="value">${activeCount}</div><div class="sub">of ${visibleAccounts().length} shown</div></div>`;
   }
 
   function renderChips() {
@@ -931,7 +974,9 @@ footer {
   // ---------------------------------------------------------------- wiring
   async function refresh({ bustCache = false } = {}) {
     try {
-      state.posts = await load({ bustCache });
+      const { posts, deliveries } = await load({ bustCache });
+      state.posts = posts;
+      state.deliveries = deliveries;
       state.fetchedAt = new Date();
       state.error = null;
       applyScope();   // follow the newest period unless the user pinned one
@@ -983,7 +1028,7 @@ footer {
     resizeTimer = setTimeout(render, 150);
   });
 
-  // Periodic re-read of the published ledger. Read-only and client-side —
+  // Periodic re-read of the published data files. Read-only and client-side —
   // it cannot collide with the relay's own runs.
   setInterval(() => { if (!document.hidden) refresh(); }, AUTO_REFRESH_MS);
   document.addEventListener("visibilitychange", () => {
