@@ -1125,9 +1125,12 @@ footer {
     }
   }
 
-  document.getElementById("btn-refresh").addEventListener("click", (e) => {
-    e.currentTarget.disabled = true;
-    refresh({ bustCache: true }).finally(() => { e.currentTarget.disabled = false; });
+  // Hold the element in a local: `e.currentTarget` is null by the time the
+  // promise settles, which would leave the button permanently disabled.
+  const refreshBtn = document.getElementById("btn-refresh");
+  refreshBtn.addEventListener("click", () => {
+    refreshBtn.disabled = true;
+    refresh({ bustCache: true }).finally(() => { refreshBtn.disabled = false; });
   });
 
   let resizeTimer;
