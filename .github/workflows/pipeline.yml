@@ -42,15 +42,8 @@ jobs:
           DISCORD_WEBHOOK_URL_RESTOCKS:  ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
         run: python src/main.py
 
-      - name: Commit updated seen_ids.json
+      - name: Publish updated data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/seen_ids.json data/deliveries.json data/recent_posts.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update seen post IDs [skip ci]"
-            # Rebase in case anything landed on main mid-run — losing this
-            # push would un-mark posted tweets and cause duplicates
-            git pull --rebase origin main
-            git push
-          fi
+          python src/commit_data.py

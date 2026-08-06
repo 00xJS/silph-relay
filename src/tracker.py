@@ -16,6 +16,23 @@ RECENT_POSTS_FILE = Path("data/recent_posts.json")
 MAX_RECENT_POSTS  = 200
 SNIPPET_CHARS     = 220
 
+# What this run added, so the commit step can re-apply it onto a freshly
+# fetched origin/main instead of rebasing (which cannot merge these files).
+# Untracked — see .gitignore.
+DELTA_FILE = Path("data/.delta.json")
+
+
+def _dump_lines(records, path):
+    """Write a JSON array with one record per line.
+
+    Line-per-record matters: git merges line-by-line, so a single-line JSON
+    file is unmergeable and any concurrent write becomes a hard conflict.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = ",\n".join(json.dumps(r, separators=(",", ":"), ensure_ascii=False) for r in records)
+    with open(path, "w") as f:
+        f.write(f"[\n{body}\n]\n" if records else "[]\n")
+
 
 def load_seen_ids():
     """Load previously processed post IDs from disk."""
@@ -66,9 +83,7 @@ def save_recent_posts(records):
         if rid:
             newest[rid] = r
     trimmed = sorted(newest.values(), key=lambda r: r.get("delivered", 0))[-MAX_RECENT_POSTS:]
-    RECENT_POSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(RECENT_POSTS_FILE, "w") as f:
-        json.dump(trimmed, f, separators=(",", ":"), ensure_ascii=False)
+    _dump_lines(trimmed, RECENT_POSTS_FILE)
 
 
 def make_post_record(post, status_id, delivered_at):
@@ -99,6 +114,18 @@ def save_deliveries(records):
         if sid not in newest or ts < newest[sid]:
             newest[sid] = int(ts)
     trimmed = sorted(newest.items(), key=lambda r: r[1])[-MAX_DELIVERIES:]
-    DELIVERIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(DELIVERIES_FILE, "w") as f:
-        json.dump([[s, t] for s, t in trimmed], f, separators=(",", ":"))
+    _dump_lines([[s, t] for s, t in trimmed], DELIVERIES_FILE)
+
+
+def save_delta(new_seen=(), deliveries=(), log_rows=()):
+    """Record this run's additions for the commit step. Never raises."""
+    try:
+        DELTA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(DELTA_FILE, "w") as f:
+            json.dump({
+                "seen":       sorted(new_seen),
+                "deliveries": [[str(a), int(b)] for a, b in deliveries],
+                "log":        list(log_rows),
+            }, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"  [tracker] Couldn't write delta: {e}")

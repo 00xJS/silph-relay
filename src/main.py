@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fetcher       import fetch_all, status_num
 from tracker       import (load_seen_ids, save_seen_ids, load_deliveries, save_deliveries,
-                           load_recent_posts, save_recent_posts, make_post_record)
+                           load_recent_posts, save_recent_posts, make_post_record, save_delta)
 from discord_poster import post_to_discord
 
 
@@ -23,6 +23,7 @@ def main():
     if not posts:
         if skip_ids:
             save_seen_ids(seen_ids | skip_ids)
+            save_delta(new_seen=skip_ids)
         print("[main] Nothing new — done.")
         return
 
@@ -64,7 +65,8 @@ def main():
     # Mark posted + permanently-failed IDs as seen so we don't retry those
     # forever; deferred posts stay unseen and are picked up next run.
     # Pacing between sends is handled inside discord_poster.
-    save_seen_ids((seen_ids | {p["id"] for p in posts} | skip_ids) - retry_ids)
+    new_seen = ({p["id"] for p in posts} | skip_ids) - retry_ids
+    save_seen_ids(seen_ids | new_seen)
 
     # Metrics are best-effort — never let them break a posting run
     if delivered:
@@ -73,6 +75,10 @@ def main():
             save_recent_posts(load_recent_posts() + log_rows)
         except Exception as e:
             print(f"[main] Could not record delivery metrics: {e}")
+
+    # Hand the additions to the commit step so it can re-apply them onto the
+    # latest origin/main rather than rebasing (which conflicts on these files)
+    save_delta(new_seen=new_seen, deliveries=delivered, log_rows=log_rows)
 
     print(f"\n[main] Done — {len(posted_ids)} posted, {failed} failed, {len(retry_ids)} deferred")
 

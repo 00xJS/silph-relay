@@ -31,3 +31,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Per-run delta handed to the commit step — never committed
+data/.delta.json
