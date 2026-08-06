@@ -173,7 +173,27 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
   transition: border-color 0.2s ease, transform 0.2s ease;
 }
 .btn:hover { border-color: var(--border-hover); transform: translateY(-1px); }
+.btn--sm { font-size: 12px; padding: 5px 11px; margin-left: auto; }
 .spacer { flex: 1 1 auto; }
+
+/* ===== form controls ===== */
+input, select {
+  font-family: var(--font-sans); font-size: 13px;
+  color: var(--text); background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  padding: 7px 10px;
+}
+input:focus, select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 154, 68, 0.18);
+}
+.log-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.log-toolbar input[type="search"] { flex: 1 1 240px; min-width: 150px; }
+.log-toolbar .btn--sm { margin-left: 0; }
+
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--muted); }
+th .sort-ind { color: var(--accent); margin-left: 5px; }
 
 /* ===== stat tiles ===== */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
@@ -329,8 +349,16 @@ footer {
     <div class="panel__head">
       <span class="panel__title">Post log</span>
       <span class="panel__note" id="log-note"></span>
+      <button class="btn btn--sm" id="log-toggle" aria-expanded="true" aria-controls="log-body">Hide</button>
     </div>
-    <div class="panel__body" style="overflow-x:auto"><div id="log"></div></div>
+    <div class="panel__body" id="log-body">
+      <div class="log-toolbar">
+        <input id="log-search" type="search" placeholder="Search post text or account…" aria-label="Search posts">
+        <select id="log-acct" aria-label="Filter by account"></select>
+        <button class="btn btn--sm" id="log-clear">Clear</button>
+      </div>
+      <div id="log" style="overflow-x:auto"></div>
+    </div>
   </section>
 
   <footer>
@@ -391,6 +419,9 @@ footer {
     hidden: new Set(),    // account keys hidden via legend
     selected: null,       // focused bucket key; null means the whole span
     pinned: false,        // true once the user picks a period by hand
+    logQuery: "",         // post-log search text
+    logSort: { key: "when", dir: "desc" },
+    logCollapsed: false,
     fetchedAt: null,
     error: null,
   };
@@ -901,7 +932,14 @@ footer {
 
   const MAX_LOG_ROWS = 60;
 
-  /** Newest-first log of what was actually relayed, for the current period. */
+  const LOG_COLUMNS = [
+    { key: "when",    label: "When",        sortable: true },
+    { key: "account", label: "Account",     sortable: true },
+    { key: "post",    label: "Post",        sortable: false },
+    { key: "latency", label: "Notified in", sortable: true, num: true },
+  ];
+
+  /** Log of what was actually relayed, for the current period — sortable + searchable. */
   function renderLog() {
     const host = document.getElementById("log");
     const note = document.getElementById("log-note");
@@ -912,30 +950,70 @@ footer {
       return;
     }
 
-    const rows = selectedPosts()
-      .filter((p) => state.log.has(p.id))
-      .map((p) => ({ post: p, row: state.log.get(p.id) }))
-      .sort((a, b) => b.post.ts - a.post.ts);
+    const q = state.logQuery.trim().toLowerCase();
+    const inPeriod = selectedPosts().filter((p) => state.log.has(p.id));
 
-    note.textContent = rows.length > MAX_LOG_ROWS
-      ? `newest ${MAX_LOG_ROWS} of ${rows.length}`
-      : `${rows.length} post${rows.length === 1 ? "" : "s"}`;
+    let rows = inPeriod
+      .map((p) => {
+        const row = state.log.get(p.id);
+        const delivered = state.deliveries.get(p.id);
+        return {
+          post: p,
+          row,
+          lat: delivered ? (delivered - p.ts.getTime()) / 1000 : null,
+        };
+      })
+      .filter(({ post, row }) =>
+        !q ||
+        (row.text || "").toLowerCase().includes(q) ||
+        post.acct.label.toLowerCase().includes(q) ||
+        (row.author || "").toLowerCase().includes(q)
+      );
+
+    const { key, dir } = state.logSort;
+    const sign = dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      if (key === "account") return sign * a.post.acct.label.localeCompare(b.post.acct.label);
+      if (key === "latency") {
+        // rows without timing always sort last, whichever direction
+        if (a.lat === null && b.lat === null) return 0;
+        if (a.lat === null) return 1;
+        if (b.lat === null) return -1;
+        return sign * (a.lat - b.lat);
+      }
+      return sign * (a.post.ts - b.post.ts);
+    });
+
+    const shown = Math.min(rows.length, MAX_LOG_ROWS);
+    note.textContent = !rows.length
+      ? "no matches"
+      : rows.length > MAX_LOG_ROWS
+        ? `showing ${shown} of ${rows.length}${q ? " matching" : ""}`
+        : `${rows.length} post${rows.length === 1 ? "" : "s"}${q ? " matching" : ""}`;
 
     if (!rows.length) {
-      host.innerHTML = `<div class="msg">No logged posts in this period.<br>
-        <span style="font-size:12px">The log covers recent posts; older ones predate it.</span></div>`;
+      host.innerHTML = q
+        ? `<div class="msg">No posts match “${escapeHtml(state.logQuery)}”.</div>`
+        : `<div class="msg">No logged posts in this period.<br>
+           <span style="font-size:12px">The log covers recent posts; older ones predate it.</span></div>`;
       return;
     }
 
+    const headHtml = LOG_COLUMNS.map((c) => {
+      const active = state.logSort.key === c.key;
+      const ind = active ? `<span class="sort-ind">${dir === "asc" ? "▲" : "▼"}</span>` : "";
+      const cls = [c.num ? "num" : "", c.sortable ? "sortable" : ""].filter(Boolean).join(" ");
+      const attrs = c.sortable
+        ? ` data-sort="${c.key}" role="button" tabindex="0" aria-sort="${active ? (dir === "asc" ? "ascending" : "descending") : "none"}"`
+        : "";
+      return `<th class="${cls}"${attrs}>${c.label}${ind}</th>`;
+    }).join("");
+
     host.innerHTML = `
       <table>
-        <thead><tr>
-          <th>When</th><th>Account</th><th>Post</th><th class="num">Notified in</th>
-        </tr></thead>
+        <thead><tr>${headHtml}</tr></thead>
         <tbody>
-          ${rows.slice(0, MAX_LOG_ROWS).map(({ post, row }) => {
-            const delivered = state.deliveries.get(post.id);
-            const lat = delivered ? (delivered - post.ts.getTime()) / 1000 : null;
+          ${rows.slice(0, MAX_LOG_ROWS).map(({ post, row, lat }) => {
             const via = row.author
               ? `<div style="font-size:11px;color:var(--faint)">↻ reposted from @${escapeHtml(row.author)}</div>`
               : "";
@@ -953,6 +1031,36 @@ footer {
           }).join("")}
         </tbody>
       </table>`;
+
+    // Sorting is delegated so it survives the innerHTML rebuild
+    host.querySelectorAll("th.sortable").forEach((th) => {
+      const apply = () => {
+        const k = th.dataset.sort;
+        state.logSort = state.logSort.key === k
+          ? { key: k, dir: state.logSort.dir === "asc" ? "desc" : "asc" }
+          // sensible first click: newest/slowest first, accounts A–Z
+          : { key: k, dir: k === "account" ? "asc" : "desc" };
+        renderLog();
+      };
+      th.addEventListener("click", apply);
+      th.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); apply(); }
+      });
+    });
+  }
+
+  /** Keep the log's account picker in step with the dashboard-wide filter. */
+  function renderLogControls() {
+    const sel = document.getElementById("log-acct");
+    const present = [...ACCOUNTS, OTHER].filter((a) => state.posts.some((p) => p.acct.key === a.key));
+    const wanted = ["all", ...present.map((a) => a.key)].join("|");
+    if (sel.dataset.built !== wanted) {
+      sel.innerHTML = `<option value="all">All accounts</option>` +
+        present.map((a) => `<option value="${a.key}">${escapeHtml(a.label)}</option>`).join("");
+      sel.dataset.built = wanted;
+    }
+    const visible = present.filter((a) => !state.hidden.has(a.key));
+    sel.value = visible.length === 1 ? visible[0].key : "all";
   }
 
   function renderStats() {
@@ -1075,7 +1183,8 @@ footer {
     }
     if (!state.posts.length) return;
     renderChips(); renderLegend(); renderStats(); renderNotes();
-    renderTimeline(); renderAccounts(); renderHeatmap(); renderTable(); renderLog();
+    renderTimeline(); renderAccounts(); renderHeatmap(); renderTable();
+    renderLogControls(); renderLog();
   }
 
   // ---------------------------------------------------------------- wiring
@@ -1131,6 +1240,50 @@ footer {
   refreshBtn.addEventListener("click", () => {
     refreshBtn.disabled = true;
     refresh({ bustCache: true }).finally(() => { refreshBtn.disabled = false; });
+  });
+
+  // ---- post log: search, account filter, collapse ----
+  const LOG_COLLAPSE_KEY = "silph.logCollapsed";
+  const logBody = document.getElementById("log-body");
+  const logToggle = document.getElementById("log-toggle");
+
+  function applyLogCollapse() {
+    logBody.style.display = state.logCollapsed ? "none" : "";
+    logToggle.textContent = state.logCollapsed ? "Show" : "Hide";
+    logToggle.setAttribute("aria-expanded", String(!state.logCollapsed));
+  }
+
+  try {
+    state.logCollapsed = localStorage.getItem(LOG_COLLAPSE_KEY) === "1";
+  } catch { /* storage unavailable — default to expanded */ }
+  applyLogCollapse();
+
+  logToggle.addEventListener("click", () => {
+    state.logCollapsed = !state.logCollapsed;
+    try { localStorage.setItem(LOG_COLLAPSE_KEY, state.logCollapsed ? "1" : "0"); } catch {}
+    applyLogCollapse();
+  });
+
+  let searchTimer;
+  document.getElementById("log-search").addEventListener("input", (e) => {
+    const v = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { state.logQuery = v; renderLog(); }, 150);
+  });
+
+  document.getElementById("log-acct").addEventListener("change", (e) => {
+    const v = e.target.value;
+    state.hidden = v === "all"
+      ? new Set()
+      : new Set([...ACCOUNTS, OTHER].map((a) => a.key).filter((k) => k !== v));
+    render();
+  });
+
+  document.getElementById("log-clear").addEventListener("click", () => {
+    state.logQuery = "";
+    document.getElementById("log-search").value = "";
+    state.hidden = new Set();
+    render();
   });
 
   let resizeTimer;
