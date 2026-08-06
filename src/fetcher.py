@@ -188,9 +188,14 @@ def fetch_account_fx(account, seen_nums):
 
         local_images = download_images(clean_image_url(u) for u in photo_urls)
 
+        # On a repost the URL/author belong to the ORIGINAL poster, so record
+        # who actually wrote it — the relaying account is `account`.
+        author = ((st.get("author") or {}).get("screen_name") or "").strip()
+
         posts.append({
             "id":        post_url,
             "account":   account,
+            "author":    author,
             "text":      (st.get("text") or "").strip(),
             "url":       post_url,
             "published": st.get("created_at", ""),

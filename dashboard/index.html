@@ -325,6 +325,14 @@ footer {
     <div class="panel__body" style="overflow-x:auto"><div id="table"></div></div>
   </section>
 
+  <section class="panel">
+    <div class="panel__head">
+      <span class="panel__title">Post log</span>
+      <span class="panel__note" id="log-note"></span>
+    </div>
+    <div class="panel__body" style="overflow-x:auto"><div id="log"></div></div>
+  </section>
+
   <footer>
     <a href="https://observation-deck.netlify.app/">Observation Deck</a> ·
     JS ·
@@ -342,6 +350,7 @@ footer {
   const REPO = "00xJS/silph-relay";
   const DATA_URL = `https://raw.githubusercontent.com/${REPO}/main/data/seen_ids.json`;
   const DELIVERIES_URL = `https://raw.githubusercontent.com/${REPO}/main/data/deliveries.json`;
+  const LOG_URL = `https://raw.githubusercontent.com/${REPO}/main/data/recent_posts.json`;
   const SNOWFLAKE_EPOCH = 1288834974657n;   // X's snowflake epoch
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
 
@@ -355,7 +364,9 @@ footer {
     { key: "pokemonrestocks", label: "@pokemonrestocks", slot: "--s5", channel: "TCG restocks" },
     { key: "pokemondealstcg", label: "@PokemonDealsTCG", slot: "--s6", channel: "TCG restocks" },
   ];
-  const OTHER = { key: "__other", label: "Other", slot: "--s-other", channel: "—" };
+  // Posts whose author isn't one of the tracked accounts — almost always a
+  // repost the relay picked up before the log recorded who surfaced it.
+  const OTHER = { key: "__other", label: "Other authors", slot: "--s-other", channel: "reposts" };
 
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const colorOf = (acct) => cssVar(acct.slot);
@@ -374,6 +385,7 @@ footer {
   const state = {
     posts: [],            // { ts: Date, acct, id }
     deliveries: new Map(),// status id -> delivery time (ms), recorded by the relay
+    log: new Map(),       // status id -> { acct, text, url, delivered, img?, author? }
     scope: "week",        // "week" | "month" | "all" — what every panel reports on
     granularity: "week",  // timeline bucket size: "week" | "month" ("all" buckets monthly)
     hidden: new Set(),    // account keys hidden via legend
@@ -392,15 +404,23 @@ footer {
 
   const URL_RE = /(?:twitter|x)\.com\/([^/]+)\/status(?:es)?\/(\d+)/i;
 
-  function parse(rawIds) {
+  function parse(rawIds, log) {
     const byKey = new Map(ACCOUNTS.map((a) => [a.key, a]));
     const out = [];
     for (const raw of rawIds) {
       const m = URL_RE.exec(String(raw));
       if (!m) continue;
-      const acct = byKey.get(m[1].toLowerCase()) || OTHER;
       const ms = timestampFromId(m[2]);
       if (!Number.isFinite(ms) || ms < 1e12) continue;
+
+      // The log knows which tracked account surfaced the post; the URL only
+      // names the author, which is wrong for reposts. Prefer the log.
+      const logged = log && log.get(m[2]);
+      const acct =
+        (logged && byKey.get(String(logged.acct).toLowerCase())) ||
+        byKey.get(m[1].toLowerCase()) ||
+        OTHER;
+
       out.push({ ts: new Date(ms), acct, id: m[2] });
     }
     out.sort((a, b) => a.ts - b.ts);
@@ -411,10 +431,11 @@ footer {
     const bust = (u) => (bustCache ? `${u}?t=${Date.now()}` : u);
     const opts = { cache: bustCache ? "reload" : "default" };
 
-    const [idsRes, delRes] = await Promise.all([
+    const [idsRes, delRes, logRes] = await Promise.all([
       fetch(bust(DATA_URL), opts),
-      // Delivery times are a nice-to-have — a failure here must not blank the page
+      // These two are nice-to-haves — a failure must not blank the page
       fetch(bust(DELIVERIES_URL), opts).catch(() => null),
+      fetch(bust(LOG_URL), opts).catch(() => null),
     ]);
 
     if (!idsRes.ok) throw new Error(`GitHub returned HTTP ${idsRes.status}`);
@@ -432,7 +453,17 @@ footer {
         }
       } catch { /* leave empty — the tile degrades to "—" */ }
     }
-    return { posts: parse(ids), deliveries };
+
+    let log = new Map();
+    if (logRes && logRes.ok) {
+      try {
+        const rows = await logRes.json();
+        if (Array.isArray(rows)) {
+          log = new Map(rows.filter((r) => r && r.id).map((r) => [String(r.id), r]));
+        }
+      } catch { /* the log panel degrades to a message */ }
+    }
+    return { posts: parse(ids, log), deliveries, log };
   }
 
   // ---------------------------------------------------------------- buckets
@@ -690,24 +721,41 @@ footer {
       svg.appendChild(label);
 
       const w = Math.max((r.n / max) * trackW, r.n > 0 ? 3 : 0);
+      const isSolo = state.hidden.size > 0 && !state.hidden.has(r.acct.key);
+
       svg.appendChild(svgEl("rect", {
-        x: labelW, y: yTop + 5, width: trackW, height: rowH - 10, rx: 4, fill: "rgba(255,255,255,0.04)",
+        x: labelW, y: yTop + 5, width: trackW, height: rowH - 10, rx: 4,
+        fill: "rgba(255,255,255,0.04)", "pointer-events": "none",
       }));
-      const bar = svgEl("rect", {
+      svg.appendChild(svgEl("rect", {
         class: "seg-rect", x: labelW, y: yTop + 5, width: w, height: rowH - 10,
-        rx: Math.min(4, (rowH - 10) / 2), fill: colorOf(r.acct),
-      });
-      bar.addEventListener("mousemove", (e) => {
-        const pct = posts.length ? Math.round((r.n / posts.length) * 100) : 0;
-        showTooltip(e, `<div class="tt-head">${r.acct.label}</div><div class="tt-row"><span class="swatch" style="background:${colorOf(r.acct)}"></span>${r.acct.channel}<b>${r.n}</b></div><div class="tt-row tt-total">Share<b>${pct}%</b></div>`);
-      });
-      bar.addEventListener("mouseleave", hideTooltip);
-      svg.appendChild(bar);
+        rx: Math.min(4, (rowH - 10) / 2), fill: colorOf(r.acct), "pointer-events": "none",
+      }));
 
       // direct value label — also the relief for sub-3:1 hues
-      const val = svgEl("text", { class: "val-label", x: W, y: yTop + rowH / 2 + 3, "text-anchor": "end" });
+      const val = svgEl("text", {
+        class: "val-label", x: W, y: yTop + rowH / 2 + 3, "text-anchor": "end", "pointer-events": "none",
+      });
       val.textContent = r.n;
       svg.appendChild(val);
+
+      // marks are decoration; one row-wide target owns hover and click
+      const hit = svgEl("rect", {
+        class: "bucket-hit" + (isSolo ? " is-sel" : ""),
+        x: 0, y: yTop, width: W, height: rowH, rx: 4,
+      });
+      hit.addEventListener("mousemove", (e) => {
+        const pct = posts.length ? Math.round((r.n / posts.length) * 100) : 0;
+        showTooltip(e, `<div class="tt-head">${r.acct.label}</div><div class="tt-row"><span class="swatch" style="background:${colorOf(r.acct)}"></span>${r.acct.channel}<b>${r.n}</b></div><div class="tt-row tt-total">Share<b>${pct}%</b></div><div class="tt-row" style="color:var(--faint)">${isSolo ? "click to show all" : "click to filter to this account"}</div>`);
+      });
+      hit.addEventListener("mouseleave", hideTooltip);
+      hit.addEventListener("click", () => {
+        state.hidden = isSolo
+          ? new Set()
+          : new Set([...ACCOUNTS, OTHER].map((a) => a.key).filter((k) => k !== r.acct.key));
+        hideTooltip(); render();
+      });
+      svg.appendChild(hit);
     });
 
     host.appendChild(svg);
@@ -848,6 +896,65 @@ footer {
   }
 
   /** Every tile reports on the period the controls are showing, not a fixed window. */
+  const escapeHtml = (s) =>
+    String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const MAX_LOG_ROWS = 60;
+
+  /** Newest-first log of what was actually relayed, for the current period. */
+  function renderLog() {
+    const host = document.getElementById("log");
+    const note = document.getElementById("log-note");
+
+    if (!state.log.size) {
+      host.innerHTML = `<div class="msg">No post log published yet — it fills in as the relay posts.</div>`;
+      note.textContent = "";
+      return;
+    }
+
+    const rows = selectedPosts()
+      .filter((p) => state.log.has(p.id))
+      .map((p) => ({ post: p, row: state.log.get(p.id) }))
+      .sort((a, b) => b.post.ts - a.post.ts);
+
+    note.textContent = rows.length > MAX_LOG_ROWS
+      ? `newest ${MAX_LOG_ROWS} of ${rows.length}`
+      : `${rows.length} post${rows.length === 1 ? "" : "s"}`;
+
+    if (!rows.length) {
+      host.innerHTML = `<div class="msg">No logged posts in this period.<br>
+        <span style="font-size:12px">The log covers recent posts; older ones predate it.</span></div>`;
+      return;
+    }
+
+    host.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>When</th><th>Account</th><th>Post</th><th class="num">Notified in</th>
+        </tr></thead>
+        <tbody>
+          ${rows.slice(0, MAX_LOG_ROWS).map(({ post, row }) => {
+            const delivered = state.deliveries.get(post.id);
+            const lat = delivered ? (delivered - post.ts.getTime()) / 1000 : null;
+            const via = row.author
+              ? `<div style="font-size:11px;color:var(--faint)">↻ reposted from @${escapeHtml(row.author)}</div>`
+              : "";
+            const img = row.img ? ` <span style="color:var(--faint)">· ${row.img} 🖼</span>` : "";
+            const text = row.text
+              ? escapeHtml(row.text)
+              : `<span style="color:var(--faint)">no text captured</span>`;
+            return `
+              <tr>
+                <td style="white-space:nowrap">${post.ts.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                <td class="name" style="white-space:nowrap"><span class="swatch" style="background:${colorOf(post.acct)}"></span>${post.acct.label}${via}</td>
+                <td>${text}${img}${row.url ? ` <a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">View&nbsp;↗</a>` : ""}</td>
+                <td class="num" style="white-space:nowrap">${lat !== null && lat > 0 ? fmtDuration(lat) : "—"}</td>
+              </tr>`;
+          }).join("")}
+        </tbody>
+      </table>`;
+  }
+
   function renderStats() {
     const host = document.getElementById("stats");
     const all = state.posts.filter((p) => !state.hidden.has(p.acct.key));
@@ -968,15 +1075,16 @@ footer {
     }
     if (!state.posts.length) return;
     renderChips(); renderLegend(); renderStats(); renderNotes();
-    renderTimeline(); renderAccounts(); renderHeatmap(); renderTable();
+    renderTimeline(); renderAccounts(); renderHeatmap(); renderTable(); renderLog();
   }
 
   // ---------------------------------------------------------------- wiring
   async function refresh({ bustCache = false } = {}) {
     try {
-      const { posts, deliveries } = await load({ bustCache });
+      const { posts, deliveries, log } = await load({ bustCache });
       state.posts = posts;
       state.deliveries = deliveries;
+      state.log = log;
       state.fetchedAt = new Date();
       state.error = null;
       applyScope();   // follow the newest period unless the user pinned one
