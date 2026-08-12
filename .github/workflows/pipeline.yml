@@ -37,6 +37,11 @@ jobs:
 
       - name: Run bot
         env:
+          # Extra in-run polls for the restock accounts. Unset/1 = the
+          # long-standing single-poll behaviour. Flip it in the repo's
+          # Actions variables (Settings -> Variables) — no commit needed.
+          POLL_CYCLES:                   ${{ vars.POLL_CYCLES }}
+          POLL_WINDOW_SECONDS:           ${{ vars.POLL_WINDOW_SECONDS }}
           RSSHUB_URL:                    ${{ secrets.RSSHUB_URL }}
           RSSHUB_ACCESS_KEY:             ${{ secrets.RSSHUB_ACCESS_KEY }}
           DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}

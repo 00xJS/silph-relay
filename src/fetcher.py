@@ -411,20 +411,32 @@ def fetch_account(account, seen_ids, seen_nums):
     return [], set()
 
 
-def fetch_all(seen_ids):
-    """Fetch new posts from all tracked accounts in parallel.
+# Accounts worth re-checking within a single run when fast polling is on.
+# Restock drops are the only thing here where seconds genuinely matter.
+FAST_HANDLES = [h.strip().lower() for h in
+                os.getenv("FAST_HANDLES", "pokemonrestocks,PokemonDealsTCG").split(",") if h.strip()]
+
+FAST_ACCOUNTS = [a for a in ACCOUNTS if a["handle"].lower() in FAST_HANDLES]
+
+
+def fetch_all(seen_ids, accounts=None):
+    """Fetch new posts from the given accounts (default: all) in parallel.
 
     Returns (posts, skip_ids) — skip_ids are entries to mark seen
     without posting.
     """
+    accounts = ACCOUNTS if accounts is None else accounts
+    if not accounts:
+        return [], set()
+
     seen_nums = {status_num(i) for i in seen_ids}
 
     if FEED_SOURCE == "rsshub" and RSSHUB_URL:
         warmup()
 
     all_posts, skip_ids = [], set()
-    with ThreadPoolExecutor(max_workers=len(ACCOUNTS)) as pool:
-        for posts, skips in pool.map(lambda acc: fetch_account(acc, seen_ids, seen_nums), ACCOUNTS):
+    with ThreadPoolExecutor(max_workers=len(accounts)) as pool:
+        for posts, skips in pool.map(lambda acc: fetch_account(acc, seen_ids, seen_nums), accounts):
             all_posts.extend(posts)
             skip_ids |= skips
     return all_posts, skip_ids
