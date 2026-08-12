@@ -36,7 +36,7 @@ RSSHub feed  (fallback) ──┴→ fetcher.py → discord_poster.py → Discor
 1. **fetcher.py** pulls each account's recent posts (all accounts in parallel) from [FxTwitter's](https://docs.fxembed.com) free no-auth JSON API, automatically falling back to an RSSHub feed if that fails
 2. Already-seen posts (matched by numeric status ID), replies to other accounts, and stale posts (>24h) are filtered out; images are downloaded
 3. **discord_poster.py** sends each new post to its account's Discord webhook with images attached
-4. **seen_ids.json** is committed back to the repo after each run to persist deduplication across GitHub Actions runs
+4. **seen_ids.json** is committed back to the repo after each run, so the next run knows what has already been relayed
 
 ---
 
@@ -136,9 +136,11 @@ needed: the account handle sits in the URL, and the numeric tweet ID is a
 [Snowflake](https://en.wikipedia.org/wiki/Snowflake_ID) whose high bits are the exact
 creation time (`created_ms = (id >> 22) + 1288834974657`). No API calls required.
 
-## Deduplication
+## Not posting the same thing twice
 
-`seen_ids.json` stores the ID of every post that has been relayed. Since GitHub Actions has no persistent filesystem between runs, the workflow commits this file back to the repo after each run (tagged `[skip ci]` to prevent loops). On the next run, the updated file is checked out and already-seen posts are skipped.
+`seen_ids.json` stores the ID of every post that has been relayed. Since GitHub Actions has no persistent filesystem between runs, the workflow commits this file back to the repo after each run (tagged `[skip ci]` to prevent loops). On the next run, the updated file is checked out and posts already relayed are skipped.
+
+Matching is on the numeric tweet ID rather than the URL, so a post still counts as already-relayed even if two tracked accounts share it or the link form changes.
 
 ---
 
