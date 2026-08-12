@@ -149,6 +149,16 @@ def post_to_discord(post):
             print(f"  [discord] Server error ({r.status_code}) — will retry next run")
             return None
 
+        # 401/403/404 mean the WEBHOOK is broken (revoked, deleted, wrong URL),
+        # not that this post is bad. Marking it seen would silently destroy it
+        # and every post after it, behind a green checkmark — so defer instead
+        # and make the reason loud.
+        if r.status_code in (401, 403, 404):
+            print(f"  [discord] !! Webhook rejected the request ({r.status_code}) via {webhook_env}. "
+                  f"The webhook is probably deleted or the secret is wrong — nothing will post "
+                  f"to this channel until it's fixed. Holding the post for retry.")
+            return None
+
         print(f"  [discord] Failed ({r.status_code}): {r.text[:200]}")
         return False
 

@@ -4,9 +4,11 @@ import re
 import os
 import json
 import time
+import calendar
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import unquote
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,6 +22,10 @@ RSSHUB_ACCESS_KEY = os.getenv("RSSHUB_ACCESS_KEY", "")
 # FEED_SOURCE: auto (FxTwitter, fall back to RSSHub) | fx | rsshub
 FX_API_BASE = os.getenv("FX_API_BASE", "https://api.fxtwitter.com").rstrip("/")
 FEED_SOURCE = os.getenv("FEED_SOURCE", "auto").lower()
+
+# Secondary source. Deliberately on independent infrastructure (bare Caddy, NL,
+# no Cloudflare) so it doesn't share a failure domain with FxTwitter's workers.
+NITTER_BASE = os.getenv("NITTER_BASE", "https://nitter.net").rstrip("/")
 
 # FxTwitter asks callers to identify themselves — an empty UA is rejected, and
 # generic ones risk being blocked (we share GitHub runner egress IPs with
@@ -61,6 +67,22 @@ def status_num(post_id):
     """Extract the numeric tweet ID from a post ID/URL (falls back to the raw string)."""
     m = STATUS_NUM_RE.search(post_id)
     return m.group(1) if m else post_id
+
+
+def newest_first(items, key):
+    """Sort by tweet ID descending.
+
+    Tweet IDs are snowflakes, so numeric order IS chronological order. Sources
+    do not reliably return sorted data — FxTwitter returns unsorted for most
+    accounts — and the per-run cap must keep the NEWEST posts, not whichever
+    happened to arrive first.
+    """
+    def sort_key(item):
+        try:
+            return int(key(item))
+        except (TypeError, ValueError):
+            return 0
+    return sorted(items, key=sort_key, reverse=True)
 
 
 def clean_image_url(url):
@@ -154,7 +176,7 @@ def fetch_account_fx(account, seen_nums):
     posts, skip_ids = [], set()
     skipped = 0
     age_cutoff = time.time() - MAX_POST_AGE_HOURS * 3600
-    for st in statuses:  # newest-first
+    for st in newest_first(statuses, lambda s: s.get("id")):
         num = str(st.get("id") or "").strip()
         if not num:
             continue
@@ -203,6 +225,98 @@ def fetch_account_fx(account, seen_nums):
         })
 
     summary = f"  [fetcher] {account['display']} via FxTwitter: {len(posts)} new, {skipped} already seen"
+    if skip_ids:
+        summary += f", {len(skip_ids)} marked seen unposted"
+    print(summary)
+    return posts, skip_ids
+
+
+NITTER_PIC_RE = re.compile(r"/pic/(?:orig/)?(.+)$")
+
+
+def nitter_image_url(url):
+    """Rewrite a Nitter-proxied image URL back to Twitter's own CDN."""
+    m = NITTER_PIC_RE.search(url)
+    if not m:
+        return url
+    return "https://pbs.twimg.com/" + unquote(m.group(1)).lstrip("/")
+
+
+def fetch_account_nitter(account, seen_nums):
+    """Fetch recent posts from a Nitter RSS feed (the secondary source).
+
+    Returns (posts, skip_ids), or None on failure so the caller can fall back.
+    """
+    handle = account["handle"]
+    url    = f"{NITTER_BASE}/{handle}/rss"
+
+    print(f"  [fetcher] Fetching {account['display']} — {url}")
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=25)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  [fetcher] Nitter request failed for {handle}: {e}")
+        return None
+
+    feed = feedparser.parse(r.content)
+    if not feed.entries:
+        print(f"  [fetcher] Nitter returned no entries for {handle}")
+        return None
+
+    # Pair each entry with its numeric status ID up front, so we can order by it
+    entries = []
+    for e in feed.entries:
+        m = STATUS_NUM_RE.search(e.get("id", "")) or STATUS_NUM_RE.search(e.get("link", ""))
+        if m:
+            entries.append((m.group(1), e))
+
+    posts, skip_ids = [], set()
+    skipped = 0
+    age_cutoff = time.time() - MAX_POST_AGE_HOURS * 3600
+
+    for num, entry in newest_first(entries, lambda pair: pair[0]):
+        if num in seen_nums:
+            skipped += 1
+            continue
+
+        post_url = f"https://x.com/{handle}/status/{num}"
+
+        published = entry.get("published_parsed")
+        ts = calendar.timegm(published) if published else None
+        if ts and ts < age_cutoff:
+            skip_ids.add(post_url)
+            continue
+
+        if len(posts) >= MAX_NEW_POSTS_PER_RUN:
+            skip_ids.add(post_url)
+            continue
+
+        text = re.sub(r"\s+", " ", entry.get("title", "")).strip()
+
+        # Nitter marks replies to other people as "R to @someone:"
+        reply_to = re.match(r"R to @(\w+):", text)
+        if reply_to and reply_to.group(1).lower() != handle.lower():
+            skip_ids.add(post_url)
+            continue
+
+        images = [nitter_image_url(u) for u in
+                  re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', entry.get("summary", ""), re.I)]
+        local_images = download_images(images)
+
+        # dc:creator is the ORIGINAL author, which differs on a repost
+        author = (entry.get("author") or "").lstrip("@").strip()
+
+        posts.append({
+            "id":        post_url,
+            "account":   account,
+            "author":    author,
+            "text":      text,
+            "url":       post_url,
+            "published": entry.get("published", ""),
+            "images":    local_images,
+        })
+
+    summary = f"  [fetcher] {account['display']} via Nitter: {len(posts)} new, {skipped} already seen"
     if skip_ids:
         summary += f", {len(skip_ids)} marked seen unposted"
     print(summary)
@@ -270,15 +384,31 @@ def fetch_account_rsshub(account, seen_ids, seen_nums):
 
 
 def fetch_account(account, seen_ids, seen_nums):
-    """Fetch one account from the configured source, with automatic fallback."""
-    if FEED_SOURCE != "rsshub":
+    """Fetch one account, falling through sources until one answers.
+
+    auto: FxTwitter -> Nitter. The two run on independent infrastructure, so an
+    outage of one shouldn't take the other with it.
+    """
+    if FEED_SOURCE == "rsshub":
+        return fetch_account_rsshub(account, seen_ids, seen_nums)
+
+    if FEED_SOURCE in ("auto", "fx"):
         result = fetch_account_fx(account, seen_nums)
         if result is not None:
             return result
         if FEED_SOURCE == "fx":
             return [], set()
-        print(f"  [fetcher] Falling back to RSSHub for {account['handle']}")
-    return fetch_account_rsshub(account, seen_ids, seen_nums)
+        print(f"  [fetcher] FxTwitter unavailable for {account['handle']} — trying Nitter")
+
+    if FEED_SOURCE in ("auto", "nitter"):
+        result = fetch_account_nitter(account, seen_nums)
+        if result is not None:
+            return result
+        if FEED_SOURCE == "nitter":
+            return [], set()
+        print(f"  [fetcher] Nitter unavailable for {account['handle']} too")
+
+    return [], set()
 
 
 def fetch_all(seen_ids):
