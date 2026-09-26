@@ -24,12 +24,19 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v5
         with:
+          # The branch as it is when this job STARTS, not the commit it was
+          # dispatched at. A run dispatched while the previous one was still
+          # publishing used to start from data without that run's posts and
+          # relay them again: 9 of 200 posts went out twice, 2026-09-17..26.
+          # The concurrency group guarantees the previous run has pushed by now.
+          ref: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
           show-progress: false
 
       # No setup-python or pip: the relay uses only the standard library and
       # runs on the runner's own Python 3, so no run depends on PyPI.
       - name: Run bot
+        id: bot
         env:
           # Tuning lives in the repo's Actions *variables* (Settings -> Variables)
           # so it changes without a commit. Unset = the default in code.
@@ -45,6 +52,9 @@ jobs:
         run: python3 src/main.py
 
       - name: Publish updated data
+        # Even if the bot step failed: whatever it delivered before failing
+        # must be recorded, or the next run would post it again.
+        if: ${{ !cancelled() && steps.bot.outcome != 'skipped' }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

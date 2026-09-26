@@ -167,7 +167,7 @@ so no API calls are needed.
 
 ## Not posting the same thing twice
 
-`seen_ids.json` stores the ID of every post that has been relayed. Since GitHub Actions has no persistent filesystem between runs, the workflow commits this file back to the repo after each run (tagged `[skip ci]` to prevent loops). On the next run, the updated file is checked out and posts already relayed are skipped.
+`seen_ids.json` stores the ID of every post that has been relayed. Since GitHub Actions has no persistent filesystem between runs, the workflow commits this file back to the repo after each run (tagged `[skip ci]` to prevent loops). Runs never overlap, and each one checks out the branch as the previous run left it — not the older commit it was dispatched at — so posts already relayed are always skipped.
 
 Matching is on the numeric post ID rather than the URL, so a post still counts as already-relayed if the link form changes. If two tracked accounts surface the same post, even in the same minute, it's relayed once, under the account that wrote it.
 
