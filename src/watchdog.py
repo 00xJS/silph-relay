@@ -127,7 +127,7 @@ def unstick():
     print(f"[watchdog] Relay stalled — "
           + (f"no successful run for {age / 60:.0f} min" if age is not None else "no successful run on record"))
 
-    done, planned = [], 0
+    done, planned, ghosts = [], 0, 0
     for run in unfinished_relay_runs():
         age = seconds_since(run["created_at"])
         if age < STUCK_AFTER:
@@ -151,9 +151,15 @@ def unstick():
             print(f"[watchdog] {line}")
             print(f"::warning::{line}")
             done.append(line)
+        elif r.status == 409 and "not been queued" in r.text:
+            # A ghost: GitHub lists it as queued but says it never was, and
+            # refuses to cancel it — so it can't be holding the concurrency
+            # group. Four of these date from the 2026-09-11/13 incidents.
+            ghosts += 1
+            print(f"[watchdog] Skipping {what} — GitHub says it was never queued, so it blocks nothing")
         else:
             print(f"::error::Could not {action} {what}: HTTP {r.status} {r.text[:200]}")
-    if not planned:
+    if planned == ghosts:
         print("[watchdog] No stuck relay run found — the stall is elsewhere (dispatch token, cron-job.org, GitHub)")
     return done
 
