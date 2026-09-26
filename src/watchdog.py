@@ -79,15 +79,19 @@ def unfinished_relay_runs():
     return sorted(runs.values(), key=lambda run: run["created_at"])
 
 
-def just_started(run_id):
-    """True if a job of this run is on a runner and started moments ago."""
+def reason_to_wait(run_id):
+    """Why this run must not be cancelled right now, or None if it can be.
+
+    Cancelling a job mid-post would duplicate posts, so when in doubt, wait
+    for the next pass.
+    """
     r = gh(f"/repos/{REPO}/actions/runs/{run_id}/jobs")
     if not r.ok:
-        return False
+        return f"couldn't read its jobs (HTTP {r.status}), so not cancelling blind"
     for job in r.json().get("jobs", []):
         if job.get("runner_name") and job.get("started_at") and seconds_since(job["started_at"]) < JUST_STARTED:
-            return True
-    return False
+            return "its job only just got a runner"
+    return None
 
 
 def last_success_age():
@@ -114,8 +118,9 @@ def unstick():
         if age < STUCK_AFTER:
             continue
         what = f"relay run {run['id']} ({run['status']} for {age / 60:.0f} min, created {run['created_at']})"
-        if just_started(run["id"]):
-            print(f"[watchdog] Leaving {what} — its job only just got a runner")
+        reason = reason_to_wait(run["id"])
+        if reason:
+            print(f"[watchdog] Leaving {what} — {reason}")
             continue
 
         action = "force-cancel" if age >= FORCE_AFTER else "cancel"

@@ -350,8 +350,8 @@ def _fetch_nitter_instance(base, account, seen_nums):
 
     try:
         channel = ET.fromstring(r.body).find("channel")
-    except ET.ParseError as e:  # usually a bot-challenge page instead of RSS
-        print(f"  [fetcher] Nitter ({host}) sent something other than RSS for {handle}: {e}")
+    except Exception as e:  # usually a bot-challenge page; odd encodings raise ValueError/LookupError
+        print(f"  [fetcher] Nitter ({host}) sent something other than RSS for {handle}: {e!r}")
         _dead_instances.add(base)
         return None
     items = channel.findall("item") if channel is not None else []
@@ -433,13 +433,27 @@ def fetch_account_nitter(account, seen_nums):
     for base in NITTER_INSTANCES:
         if base in _dead_instances:
             continue
-        result = _fetch_nitter_instance(base, account, seen_nums)
+        result = _guarded(_fetch_nitter_instance, base, account, seen_nums)
         if result is not None:
             return result[0], result[1], urlsplit(base).hostname or base
     return None
 
 
 # ---------------------------------------------------------------- orchestration
+
+def _guarded(fetch, *args):
+    """Run one source fetch, treating any unexpected error as that source failing.
+
+    A response in a shape nobody anticipated must never crash the run: a crash
+    after posting would leave those posts unrecorded, so the next run would
+    post them again. Falling through to the next source is always safe —
+    nothing is posted while fetching.
+    """
+    try:
+        return fetch(*args)
+    except Exception as e:
+        print(f"  [fetcher] {fetch.__name__} hit an unexpected response: {e!r}")
+        return None
 
 # Accounts FxTwitter failed for earlier in this run while Nitter covered them.
 # Later polls go straight to Nitter instead of waiting out another timeout.
@@ -456,7 +470,7 @@ def fetch_account(account, seen_nums):
     fx_failed = False
 
     if FEED_SOURCE in ("auto", "fx") and handle not in _fx_down:
-        result = fetch_account_fx(account, seen_nums)
+        result = _guarded(fetch_account_fx, account, seen_nums)
         if result is not None:
             return result[0], result[1], "fxtwitter"
         if FEED_SOURCE == "fx":

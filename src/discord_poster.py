@@ -25,8 +25,13 @@ ACCOUNT_IDENTITY = (os.getenv("DISCORD_ACCOUNT_IDENTITY") or "1").strip().lower(
 
 # Optional: a role to mention on fresh restock posts so members get a push
 # notification. Only posts routed to the restocks webhook ping — never late ones.
+# Accepts "123…" or "<@&123…>"; anything that isn't one 17–20-digit Discord ID
+# (say, two IDs pasted together) disables pings rather than risk every post.
 RESTOCK_ROLE_ID     = re.sub(r"\D", "", os.getenv("DISCORD_RESTOCK_ROLE_ID") or "")
 RESTOCK_WEBHOOK_ENV = "DISCORD_WEBHOOK_URL_RESTOCKS"
+if RESTOCK_ROLE_ID and not 17 <= len(RESTOCK_ROLE_ID) <= 20:
+    print("[discord] DISCORD_RESTOCK_ROLE_ID isn't a single Discord role ID — restock pings are off")
+    RESTOCK_ROLE_ID = ""
 
 # A post delivered this long after it was tweeted gets a "posted … ago" stamp
 # (Discord renders it in each reader's own time), so a restock relayed after an
@@ -108,7 +113,7 @@ def webhook_name(account):
     return name[:80] or None
 
 
-def build_payload(post, identity=ACCOUNT_IDENTITY, now=None):
+def build_payload(post, identity=ACCOUNT_IDENTITY, ping=True, now=None):
     """The webhook JSON for a post. Attachments are sent alongside it."""
     account = post["account"]
     url     = post.get("url") or ""
@@ -130,7 +135,7 @@ def build_payload(post, identity=ACCOUNT_IDENTITY, now=None):
         notes.append(f"🕑 posted <t:{int(created)}:R>")
     line = "  ·  ".join(part for part in [line] + notes if part)
 
-    ping = RESTOCK_ROLE_ID and not late and account.get("webhook_env") == RESTOCK_WEBHOOK_ENV
+    ping = ping and RESTOCK_ROLE_ID and not late and account.get("webhook_env") == RESTOCK_WEBHOOK_ENV
     if ping:
         line = f"<@&{RESTOCK_ROLE_ID}> {line}"
 
@@ -234,18 +239,21 @@ def post_to_discord(post):
     images = (post.get("images") or [])[:MAX_IMAGES]
 
     # Send the full message first. If Discord refuses its shape (400/413 — an
-    # avatar it won't take, attachments too large), step down to plainer
-    # versions instead of losing the post: only a refusal of the plainest
-    # version counts as a permanent failure.
-    variants = [(ACCOUNT_IDENTITY, images)]
-    if ACCOUNT_IDENTITY:
-        variants.append((False, images))
-    if images:
-        variants.append((False, []))
+    # avatar it won't take, attachments too large, a mention it rejects), step
+    # down to plainer versions instead of losing the post. The last rung is bare
+    # text with no extras; only its refusal counts as a permanent failure.
+    rungs = [(ACCOUNT_IDENTITY, images, True), (False, images, True), (False, [], False)]
+    attempts, seen = [], set()
+    for identity, files, ping in rungs:
+        payload = build_payload(post, identity=identity, ping=ping)
+        key = (json.dumps(payload, sort_keys=True), len(files))
+        if key not in seen:  # skip rungs identical to one above (no images, no ping, ...)
+            seen.add(key)
+            attempts.append((payload, files))
 
-    for i, (identity, files) in enumerate(variants):
-        result, status = _send(webhook_url, webhook_env, post, build_payload(post, identity), files)
-        if status in (400, 413) and i + 1 < len(variants):
+    for i, (payload, files) in enumerate(attempts):
+        result, status = _send(webhook_url, webhook_env, post, payload, files)
+        if status in (400, 413) and i + 1 < len(attempts):
             print(f"  [discord] Discord refused the message ({status}) — retrying a plainer version")
             continue
         return result
