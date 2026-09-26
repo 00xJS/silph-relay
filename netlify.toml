@@ -8,7 +8,10 @@
   # (exit 0 = nothing changed = skip the build; non-zero = build)
   # Compare against the last commit Netlify built, not just HEAD^: a push of
   # several commits whose last one doesn't touch the site must still deploy.
-  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- dashboard netlify.toml"
+  # Skip ONLY when there is a different previous build to compare with and the
+  # site files are unchanged — with no build cache CACHED_COMMIT_REF can be
+  # empty or equal COMMIT_REF, where a bare diff would wrongly skip.
+  ignore = "[ -n \"$CACHED_COMMIT_REF\" ] && [ \"$CACHED_COMMIT_REF\" != \"$COMMIT_REF\" ] && git diff --quiet \"$CACHED_COMMIT_REF\" \"$COMMIT_REF\" -- dashboard netlify.toml"
 
 [[headers]]
   for = "/*"
