@@ -386,7 +386,9 @@ footer {
   // API (CORS-enabled, 60 requests/hour per viewer without a token — checking
   // every 2 minutes uses 30). The relay runs every minute, so a healthy one is
   // never more than ~5 minutes stale here, even between checks.
-  const RELAY_RUNS_URL = `https://api.github.com/repos/${REPO}/actions/workflows/pipeline.yml/runs?status=success&per_page=1`;
+  // The plain run list, filtered here: GitHub's `?status=success` listing has
+  // served anonymous callers results days out of date (seen 2026-09-26).
+  const RELAY_RUNS_URL = (n) => `https://api.github.com/repos/${REPO}/actions/workflows/pipeline.yml/runs?per_page=${n}`;
   const RELAY_CHECK_MS = 2 * 60 * 1000;
   const RELAY_WARN_MS = 6 * 60 * 1000;
   const RELAY_DOWN_MS = 20 * 60 * 1000;
@@ -507,19 +509,38 @@ footer {
     return { posts: parse(ids, log), deliveries, log };
   }
 
-  /** When the relay last finished a run successfully — the status chip's signal. */
+  async function fetchRelayRuns(n) {
+    const res = await fetch(RELAY_RUNS_URL(n));
+    if (!res.ok) {
+      throw new Error(res.status === 403 || res.status === 429
+        ? "GitHub API rate limit reached — try again later" : `GitHub API returned HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    return body && Array.isArray(body.workflow_runs) ? body.workflow_runs : [];
+  }
+
+  /**
+   * When the relay last finished a run successfully — the status chip's signal.
+   * Normally one small request: the newest 5 runs. If none of those succeeded,
+   * look back 30 runs (~30 minutes); if still none, the oldest run's start is a
+   * lower bound on how long the relay has been down (`atLeast`).
+   */
   async function loadRelay() {
+    const done = (fields) => Object.assign({ lastSuccess: null, atLeast: false, error: null, checkedAt: Date.now() }, fields);
+    const succeeded = (r) => r.status === "completed" && r.conclusion === "success";
     try {
-      const res = await fetch(RELAY_RUNS_URL);
-      if (!res.ok) {
-        throw new Error(res.status === 403 || res.status === 429
-          ? "GitHub API rate limit reached — try again later" : `GitHub API returned HTTP ${res.status}`);
+      const wasDown = state.relay && state.relay.atLeast;
+      let runs = await fetchRelayRuns(wasDown ? 30 : 5);
+      let ok = runs.find(succeeded);
+      if (!ok && !wasDown && runs.length === 5) {
+        runs = await fetchRelayRuns(30);
+        ok = runs.find(succeeded);
       }
-      const body = await res.json();
-      const run = body && Array.isArray(body.workflow_runs) ? body.workflow_runs[0] : null;
-      return { lastSuccess: run ? new Date(run.updated_at) : null, error: run ? null : "no successful runs found", checkedAt: Date.now() };
+      if (ok) return done({ lastSuccess: new Date(ok.updated_at) });
+      if (runs.length) return done({ lastSuccess: new Date(runs[runs.length - 1].created_at), atLeast: true, runsChecked: runs.length });
+      return done({ error: "no relay runs found" });
     } catch (err) {
-      return { lastSuccess: null, error: err.message || String(err), checkedAt: Date.now() };
+      return done({ error: err.message || String(err) });
     }
   }
 
@@ -1154,11 +1175,14 @@ footer {
       return `<span class="chip" title="${escapeHtml(r.error || "")}"><span class="dot"></span> Relay status unknown</span>`;
     }
     const age = Date.now() - r.lastSuccess;
-    const [cls, label] = age <= RELAY_WARN_MS ? ["ok", "Relay live"]
+    const [cls, label] = age <= RELAY_WARN_MS && !r.atLeast ? ["ok", "Relay live"]
       : age <= RELAY_DOWN_MS ? ["warn", "Relay delayed"]
       : ["down", "Relay down"];
-    const tip = `Last successful relay run: ${r.lastSuccess.toLocaleString()}`;
-    return `<span class="chip ${cls}" title="${escapeHtml(tip)}"><span class="dot"></span> ${label} <b>${fmtAgo(age)}</b></span>`;
+    const tip = r.atLeast
+      ? `No successful run among the last ${r.runsChecked} (oldest started ${r.lastSuccess.toLocaleString()})`
+      : `Last successful relay run: ${r.lastSuccess.toLocaleString()}`;
+    const when = r.atLeast ? `over ${fmtAgo(age).replace(" ago", "")}` : fmtAgo(age);
+    return `<span class="chip ${cls}" title="${escapeHtml(tip)}"><span class="dot"></span> ${label} <b>${when}</b></span>`;
   }
 
   function renderChips() {

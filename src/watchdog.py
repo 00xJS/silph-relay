@@ -95,12 +95,27 @@ def reason_to_wait(run_id):
 
 
 def last_success_age():
-    """Seconds since the relay last completed a run successfully (None if never)."""
-    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?status=success&per_page=1")
+    """Seconds since the relay last completed a run successfully (None if no runs).
+
+    Reads the plain run list and filters here: GitHub's `?status=success`
+    listing has served results days out of date (seen 2026-09-26), and this
+    decides whether to cancel anything. If none of the newest runs succeeded,
+    the oldest one's age is a lower bound — ample to call a stall.
+    """
+    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?per_page=30")
     if not r.ok:
-        raise RuntimeError(f"listing successful relay runs failed: HTTP {r.status} {r.text[:200]}")
+        raise RuntimeError(f"listing relay runs failed: HTTP {r.status} {r.text[:200]}")
     runs = r.json().get("workflow_runs", [])
-    return seconds_since(runs[0]["updated_at"]) if runs else None
+    for run in runs:
+        if run.get("status") == "completed" and run.get("conclusion") == "success":
+            return seconds_since(run["updated_at"])
+    return seconds_since(runs[-1]["created_at"]) if runs else None
+
+
+def still_unfinished(run_id):
+    """Re-read one run directly — the status-filtered listings can be stale."""
+    r = gh(f"/repos/{REPO}/actions/runs/{run_id}")
+    return r.ok and r.json().get("status") in ("queued", "in_progress", "waiting", "pending", "requested")
 
 
 def unstick():
@@ -118,6 +133,8 @@ def unstick():
         if age < STUCK_AFTER:
             continue
         what = f"relay run {run['id']} ({run['status']} for {age / 60:.0f} min, created {run['created_at']})"
+        if not still_unfinished(run["id"]):
+            continue  # the listing was out of date; the run has finished
         reason = reason_to_wait(run["id"])
         if reason:
             print(f"[watchdog] Leaving {what} — {reason}")
