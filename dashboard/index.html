@@ -382,6 +382,15 @@ footer {
   const SNOWFLAKE_EPOCH = 1288834974657n;   // X's snowflake epoch
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
 
+  // Relay health: when the relay last completed a run, from GitHub's public
+  // API (CORS-enabled, 60 requests/hour per viewer without a token — checking
+  // every 2 minutes uses 30). The relay runs every minute, so a healthy one is
+  // never more than ~5 minutes stale here, even between checks.
+  const RELAY_RUNS_URL = `https://api.github.com/repos/${REPO}/actions/workflows/pipeline.yml/runs?status=success&per_page=1`;
+  const RELAY_CHECK_MS = 2 * 60 * 1000;
+  const RELAY_WARN_MS = 6 * 60 * 1000;
+  const RELAY_DOWN_MS = 20 * 60 * 1000;
+
   // Colour is bound to the account, never to rank or position, so hiding a
   // series never repaints the survivors. Deck series order.
   const ACCOUNTS = [
@@ -424,6 +433,7 @@ footer {
     logCollapsed: false,
     fetchedAt: null,
     error: null,
+    relay: null,          // { lastSuccess: Date | null, error: string | null, checkedAt }
   };
 
   // ---------------------------------------------------------------- data
@@ -495,6 +505,22 @@ footer {
       } catch { /* the log panel degrades to a message */ }
     }
     return { posts: parse(ids, log), deliveries, log };
+  }
+
+  /** When the relay last finished a run successfully — the status chip's signal. */
+  async function loadRelay() {
+    try {
+      const res = await fetch(RELAY_RUNS_URL);
+      if (!res.ok) {
+        throw new Error(res.status === 403 || res.status === 429
+          ? "GitHub API rate limit reached — try again later" : `GitHub API returned HTTP ${res.status}`);
+      }
+      const body = await res.json();
+      const run = body && Array.isArray(body.workflow_runs) ? body.workflow_runs[0] : null;
+      return { lastSuccess: run ? new Date(run.updated_at) : null, error: run ? null : "no successful runs found", checkedAt: Date.now() };
+    } catch (err) {
+      return { lastSuccess: null, error: err.message || String(err), checkedAt: Date.now() };
+    }
   }
 
   // ---------------------------------------------------------------- buckets
@@ -1112,18 +1138,40 @@ footer {
       <div class="stat"><div class="label">Active accounts</div><div class="value">${activeCount}</div><div class="sub">of ${visibleAccounts().length} shown</div></div>`;
   }
 
+  const fmtAgo = (ms) => {
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+    return `${Math.round(mins / 1440)}d ago`;
+  };
+
+  /** Live / delayed / down, from how long ago the relay last completed a run. */
+  function relayChip() {
+    const r = state.relay;
+    if (!r) return `<span class="chip"><span class="dot"></span> Relay status…</span>`;
+    if (!r.lastSuccess) {
+      return `<span class="chip" title="${escapeHtml(r.error || "")}"><span class="dot"></span> Relay status unknown</span>`;
+    }
+    const age = Date.now() - r.lastSuccess;
+    const [cls, label] = age <= RELAY_WARN_MS ? ["ok", "Relay live"]
+      : age <= RELAY_DOWN_MS ? ["warn", "Relay delayed"]
+      : ["down", "Relay down"];
+    const tip = `Last successful relay run: ${r.lastSuccess.toLocaleString()}`;
+    return `<span class="chip ${cls}" title="${escapeHtml(tip)}"><span class="dot"></span> ${label} <b>${fmtAgo(age)}</b></span>`;
+  }
+
   function renderChips() {
     const host = document.getElementById("chiprow");
     if (state.error) {
-      host.innerHTML = `<span class="chip down"><span class="dot"></span> Data unavailable</span>`;
+      host.innerHTML = `${relayChip()}<span class="chip down"><span class="dot"></span> Data unavailable</span>`;
       return;
     }
     const latest = state.posts.length ? state.posts[state.posts.length - 1].ts : null;
-    const mins = latest ? Math.round((Date.now() - latest) / 60000) : null;
-    const ago = mins === null ? "—" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
+    const ago = latest ? fmtAgo(Date.now() - latest) : "—";
     const synced = state.fetchedAt ? state.fetchedAt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "—";
     host.innerHTML = `
-      <span class="chip ok"><span class="dot"></span> Relay live</span>
+      ${relayChip()}
       <span class="chip"><span class="dot"></span> Accounts <b>${visibleAccounts().length}</b></span>
       <span class="chip"><span class="dot"></span> Posts <b>${state.posts.length}</b></span>
       <span class="chip"><span class="dot"></span> Latest post <b>${ago}</b></span>
@@ -1239,8 +1287,14 @@ footer {
   const refreshBtn = document.getElementById("btn-refresh");
   refreshBtn.addEventListener("click", () => {
     refreshBtn.disabled = true;
-    refresh({ bustCache: true }).finally(() => { refreshBtn.disabled = false; });
+    Promise.all([refresh({ bustCache: true }), refreshRelay()]).finally(() => { refreshBtn.disabled = false; });
   });
+
+  /** Re-check relay health (its own faster cadence — see RELAY_CHECK_MS). */
+  async function refreshRelay() {
+    state.relay = await loadRelay();
+    if (state.fetchedAt || state.error) renderChips();
+  }
 
   // ---- post log: search, account filter, collapse ----
   const LOG_COLLAPSE_KEY = "silph.logCollapsed";
@@ -1295,11 +1349,17 @@ footer {
   // Periodic re-read of the published data files. Read-only and client-side —
   // it cannot collide with the relay's own runs.
   setInterval(() => { if (!document.hidden) refresh(); }, AUTO_REFRESH_MS);
+  setInterval(() => { if (!document.hidden) refreshRelay(); }, RELAY_CHECK_MS);
+  // Keep the "…ago" labels honest between checks — no network involved.
+  setInterval(() => { if (!document.hidden && (state.fetchedAt || state.error)) renderChips(); }, 30 * 1000);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && state.fetchedAt && Date.now() - state.fetchedAt > AUTO_REFRESH_MS) refresh();
+    if (document.hidden) return;
+    if (state.fetchedAt && Date.now() - state.fetchedAt > AUTO_REFRESH_MS) refresh();
+    if (!state.relay || Date.now() - state.relay.checkedAt > RELAY_CHECK_MS) refreshRelay();
   });
 
   refresh();
+  refreshRelay();
 })();
 </script>
 </body>

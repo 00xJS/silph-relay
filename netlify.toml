@@ -6,7 +6,9 @@
   # rebuild: the page reads its data at runtime from GitHub, so the deployed
   # files are identical either way. Build only when the site itself changes.
   # (exit 0 = nothing changed = skip the build; non-zero = build)
-  ignore = "git diff --quiet HEAD^ HEAD -- dashboard netlify.toml"
+  # Compare against the last commit Netlify built, not just HEAD^: a push of
+  # several commits whose last one doesn't touch the site must still deploy.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- dashboard netlify.toml"
 
 [[headers]]
   for = "/*"
