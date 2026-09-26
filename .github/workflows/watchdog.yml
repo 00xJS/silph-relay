@@ -1,0 +1,32 @@
+name: Relay Watchdog
+
+on:
+  workflow_dispatch:          # PRIMARY: a second cron-job.org job, every 5 minutes
+  schedule:
+    - cron: "*/30 * * * *"   # Backstop only — GitHub's cron fires a handful of times a day at best
+
+permissions:
+  actions: write              # to cancel stuck relay runs
+  contents: read
+
+# Deliberately NO concurrency group: nothing may queue this behind a stuck run,
+# which is the whole point. Overlapping watchdog runs are harmless.
+
+jobs:
+  unstick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: src
+          show-progress: false
+
+      - name: Cancel stuck relay runs, check the fallback
+        env:
+          GITHUB_TOKEN:             ${{ github.token }}
+          NITTER_BASE:              ${{ vars.NITTER_BASE }}
+          HEALTHCHECK_URL:          ${{ secrets.HEALTHCHECK_URL }}
+          HEALTHCHECK_FALLBACK_URL: ${{ secrets.HEALTHCHECK_FALLBACK_URL }}
+        run: python3 src/watchdog.py
