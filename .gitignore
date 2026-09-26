@@ -30,5 +30,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Per-run delta handed to the commit step — never committed
+# Per-run files handed to later workflow steps — never committed
 data/.delta.json
+data/.health.json

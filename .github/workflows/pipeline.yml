@@ -2,21 +2,22 @@ name: PokeUpdates Bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # Backstop only — GitHub's cron is best-effort and often hours late
-  workflow_dispatch:          # PRIMARY trigger: cron-job.org calls this via the GitHub API every few minutes
+    - cron: "*/15 * * * *"   # Backstop only — GitHub's cron is best-effort (lately a handful of runs a day)
+  workflow_dispatch:          # PRIMARY trigger: cron-job.org calls this via the GitHub API every minute
 
 permissions:
-  contents: write             # Needed to commit seen_ids.json back to the repo
+  contents: write             # Needed to commit the data files back to the repo
 
 concurrency:
   group: pokeupdates-bot      # Never overlap runs — each one pushes to the repo
-  cancel-in-progress: false
+  cancel-in-progress: false   # Never true: it can kill a run mid-post, before seen_ids is saved
 
 jobs:
   post-updates:
     runs-on: ubuntu-24.04
     # A hung run would hold the concurrency group and stall every later
-    # dispatch — fail fast instead
+    # dispatch — fail fast instead. This only counts once the job is running;
+    # a job that never gets a runner is the watchdog's problem (watchdog.yml).
     timeout-minutes: 3
 
     steps:
@@ -26,30 +27,32 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           show-progress: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+      # No setup-python or pip: the relay uses only the standard library and
+      # runs on the runner's own Python 3, so no run depends on PyPI.
       - name: Run bot
         env:
-          # Extra in-run polls for the restock accounts. Unset/1 = the
-          # long-standing single-poll behaviour. Flip it in the repo's
-          # Actions variables (Settings -> Variables) — no commit needed.
-          POLL_CYCLES:                   ${{ vars.POLL_CYCLES }}
-          POLL_WINDOW_SECONDS:           ${{ vars.POLL_WINDOW_SECONDS }}
-          RSSHUB_URL:                    ${{ secrets.RSSHUB_URL }}
-          RSSHUB_ACCESS_KEY:             ${{ secrets.RSSHUB_ACCESS_KEY }}
+          # Tuning lives in the repo's Actions *variables* (Settings -> Variables)
+          # so it changes without a commit. Unset = the default in code.
+          POLL_CYCLES:              ${{ vars.POLL_CYCLES }}
+          POLL_MODE:                ${{ vars.POLL_MODE }}
+          POLL_WINDOW_SECONDS:      ${{ vars.POLL_WINDOW_SECONDS }}
+          FEED_SOURCE:              ${{ vars.FEED_SOURCE }}
+          NITTER_BASE:              ${{ vars.NITTER_BASE }}
+          DISCORD_ACCOUNT_IDENTITY: ${{ vars.DISCORD_ACCOUNT_IDENTITY }}
+          DISCORD_RESTOCK_ROLE_ID:  ${{ vars.DISCORD_RESTOCK_ROLE_ID }}
           DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL_RESTOCKS:  ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
-        run: python src/main.py
+        run: python3 src/main.py
 
       - name: Publish updated data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python src/commit_data.py
+          python3 src/commit_data.py
+
+      # Reached only when every step above succeeded. A no-op until the
+      # HEALTHCHECK_URL secret exists.
+      - name: Heartbeat
+        env:
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+        run: python3 src/heartbeat.py
