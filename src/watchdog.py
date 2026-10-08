@@ -18,6 +18,12 @@ The stall gate matters: GitHub's API also lists a few "ghost" runs, queued with
 zero jobs since the 2026-09-11/13 incidents, that block nothing. While the
 relay is healthy they're left alone instead of being poked every 5 minutes.
 
+It also tells Discord (src/alerts.py) when a stall starts and when the relay
+recovers — once each, not every pass. The watchdog keeps no state of its own
+(sparse checkout, read-only contents), so "once" is judged from GitHub: an
+alert goes out only if the relay was still healthy when the *previous*
+watchdog run started, i.e. this pass is the first to see the stall.
+
 Once an hour it also checks that the Nitter fallback still answers. A fallback
 nobody exercises rots unnoticed — that's how nitter.net's death went unseen —
 so this pings HEALTHCHECK_FALLBACK_URL (optional) while at least one works.
@@ -32,12 +38,15 @@ from urllib.parse import urlsplit
 sys.path.insert(0, os.path.dirname(__file__))
 
 import net
+from alerts import notify
 from fetcher import NITTER_INSTANCES, NITTER_TIMEOUT
 
 API            = (os.getenv("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
 REPO           = os.getenv("GITHUB_REPOSITORY") or "00xJS/silph-relay"
 TOKEN          = os.getenv("GITHUB_TOKEN") or ""
 RELAY_WORKFLOW = os.getenv("RELAY_WORKFLOW") or "pipeline.yml"
+THIS_WORKFLOW  = os.getenv("WATCHDOG_WORKFLOW") or "watchdog.yml"
+THIS_RUN_ID    = os.getenv("GITHUB_RUN_ID") or ""
 DRY_RUN        = (os.getenv("WATCHDOG_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
 
 # The relay succeeds every minute, and GitHub's worst runner-allocation delay
@@ -47,6 +56,7 @@ STALL_AFTER  = 10 * 60
 STUCK_AFTER  = 10 * 60
 FORCE_AFTER  = 20 * 60   # still there after a normal cancel: force it
 JUST_STARTED = 4 * 60    # a job this fresh on a runner is working — leave it
+REMIND_AFTER = 6 * 3600  # a stall still going this long after the last watchdog pass: say so again
 
 CANARY_ACCOUNT = "LeekDuck"  # posts daily, so a working instance always lists something
 
@@ -58,9 +68,16 @@ def gh(path, method="GET"):
     return net.request(f"{API}{path}", method, headers, timeout=20)
 
 
+def parse_stamp(stamp):
+    return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+
+
 def seconds_since(stamp):
-    then = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    return time.time() - then.timestamp()
+    return time.time() - parse_stamp(stamp)
+
+
+def iso(unix):
+    return datetime.fromtimestamp(unix, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def unfinished_relay_runs():
@@ -119,14 +136,18 @@ def still_unfinished(run_id):
 
 
 def unstick():
-    """If the relay has stalled, cancel the runs holding it up. Returns what was done."""
+    """If the relay has stalled, cancel the runs holding it up.
+
+    Returns (stalled, seconds since the last success or None, lines describing what was done).
+    """
     age = last_success_age()
     if age is not None and age < STALL_AFTER:
         print(f"[watchdog] Relay healthy — last successful run {age:.0f}s ago")
-        return []
+        return False, age, []
     print(f"[watchdog] Relay stalled — "
           + (f"no successful run for {age / 60:.0f} min" if age is not None else "no successful run on record"))
 
+    stall_age = age
     done, planned, ghosts = [], 0, 0
     for run in unfinished_relay_runs():
         age = seconds_since(run["created_at"])
@@ -161,7 +182,57 @@ def unstick():
             print(f"::error::Could not {action} {what}: HTTP {r.status} {r.text[:200]}")
     if planned == ghosts:
         print("[watchdog] No stuck relay run found — the stall is elsewhere (dispatch token, cron-job.org, GitHub)")
-    return done
+    return True, stall_age, done
+
+
+def previous_watchdog_run():
+    """The newest watchdog run other than this one (None if there is none)."""
+    r = gh(f"/repos/{REPO}/actions/workflows/{THIS_WORKFLOW}/runs?per_page=10")
+    if not r.ok:
+        raise RuntimeError(f"listing watchdog runs failed: HTTP {r.status} {r.text[:200]}")
+    others = [run for run in r.json().get("workflow_runs", []) if str(run["id"]) != THIS_RUN_ID]
+    return max(others, key=lambda run: run["created_at"]) if others else None
+
+
+def relay_healthy_at(unix):
+    """Had the relay completed a successful run in the STALL_AFTER before `unix`?"""
+    since = iso(unix - STALL_AFTER - 120)   # a run finishes within ~a minute of its creation
+    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?created=>={since}&per_page=100")
+    if not r.ok:
+        raise RuntimeError(f"listing relay runs since {since} failed: HTTP {r.status} {r.text[:200]}")
+    for run in r.json().get("workflow_runs", []):
+        if run.get("status") == "completed" and run.get("conclusion") == "success":
+            if unix - STALL_AFTER <= parse_stamp(run["updated_at"]) <= unix:
+                return True
+    return False
+
+
+def alert(stalled, age, done):
+    """Tell Discord about a stall once, and once more when it ends.
+
+    Decided from the previous watchdog run: if the relay was healthy when that
+    run started, this pass is the first to see the stall. If a stall outlasts
+    REMIND_AFTER since the previous pass (GitHub's sparse backstop cron), say
+    it again. Recovery is announced by the first healthy pass after a stalled one.
+    """
+    prev = previous_watchdog_run()
+    if prev is None:
+        healthy_before, prev_age = True, None
+    else:
+        prev_age = seconds_since(prev["created_at"])
+        healthy_before = relay_healthy_at(parse_stamp(prev["created_at"]))
+
+    if stalled:
+        if healthy_before or (prev_age is not None and prev_age >= REMIND_AFTER):
+            how_long = f"{age / 60:.0f} min" if age is not None else "an unknown time"
+            detail = "\n".join(done) if done else "no stuck run found — check cron-job.org, the dispatch token, or githubstatus.com"
+            notify(f"⚠️ Relay stalled — no successful run for {how_long}.\n{detail}", source="silph-relay watchdog")
+        else:
+            print("[watchdog] Stall already reported by an earlier pass — not repeating")
+    elif prev is not None and not healthy_before:
+        notify(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.", source="silph-relay watchdog")
+    else:
+        print("[watchdog] Nothing to report")
 
 
 def report(url, ok, message):
@@ -207,21 +278,28 @@ def check_fallback():
 
 
 def canary_due():
-    """Hourly on the 5-minute dispatch schedule; always on GitHub's rare cron runs."""
+    """Roughly hourly: the first passes of each hour (the watchdog now runs
+    about once a minute, triggered by relay dispatches); always on GitHub's
+    rare cron runs."""
     if (os.getenv("WATCHDOG_CANARY") or "").strip() == "1":
         return True
     if os.getenv("GITHUB_EVENT_NAME") == "schedule":
         return True
-    return datetime.now(timezone.utc).minute < 5
+    return datetime.now(timezone.utc).minute < 2
 
 
 def main():
     try:
-        done = unstick()
+        stalled, age, done = unstick()
         if done:
             report(os.getenv("HEALTHCHECK_URL"), False, "watchdog: " + "\n".join(done))
     except Exception as e:
         print(f"::error::Watchdog could not check relay runs: {e}")
+    else:
+        try:
+            alert(stalled, age, done)
+        except Exception as e:
+            print(f"::warning::Watchdog could not decide whether to alert: {e}")
 
     if canary_due():
         check_fallback()

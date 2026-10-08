@@ -16,6 +16,13 @@ RECENT_POSTS_FILE = Path("data/recent_posts.json")
 MAX_RECENT_POSTS  = 200
 SNIPPET_CHARS     = 220
 
+# Ops-alert state for the relay's own health problems (every source down, a
+# rejected webhook): when the current problem streak began and when it was
+# last reported. Tiny, whole-file, last-writer-wins. Committed so a streak
+# survives across runs.
+ALERTS_FILE = Path("data/alerts.json")
+EMPTY_ALERT_STATE = {"since": None, "alerted": None, "problems": []}
+
 # What this run added, so the commit step can re-apply it onto a freshly
 # fetched origin/main instead of rebasing (which cannot merge these files).
 # Untracked — see .gitignore.
@@ -117,8 +124,32 @@ def save_deliveries(records):
     _dump_lines([[s, t] for s, t in trimmed], DELIVERIES_FILE)
 
 
-def save_delta(new_seen=(), deliveries=(), log_rows=()):
-    """Record this run's additions for the commit step. Never raises."""
+def load_alert_state():
+    """Current ops-alert state. Never raises."""
+    try:
+        with open(ALERTS_FILE) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {**EMPTY_ALERT_STATE, **data}
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  [tracker] Couldn't read {ALERTS_FILE}: {e}")
+    return dict(EMPTY_ALERT_STATE)
+
+
+def save_alert_state(state):
+    ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(ALERTS_FILE, "w") as f:
+        json.dump({**EMPTY_ALERT_STATE, **state}, f)
+        f.write("\n")
+
+
+def save_delta(new_seen=(), deliveries=(), log_rows=(), alerts=None):
+    """Record this run's additions for the commit step. Never raises.
+
+    `alerts`, when given, is the new ops-alert state (replaces the file).
+    """
     try:
         DELTA_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(DELTA_FILE, "w") as f:
@@ -126,6 +157,7 @@ def save_delta(new_seen=(), deliveries=(), log_rows=()):
                 "seen":       sorted(new_seen),
                 "deliveries": [[str(a), int(b)] for a, b in deliveries],
                 "log":        list(log_rows),
+                "alerts":     alerts,
             }, f, ensure_ascii=False)
     except Exception as e:
         print(f"  [tracker] Couldn't write delta: {e}")

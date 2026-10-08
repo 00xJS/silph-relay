@@ -1,7 +1,14 @@
 name: Relay Watchdog
 
 on:
-  workflow_dispatch:          # PRIMARY: a second cron-job.org job, every 5 minutes
+  # PRIMARY: every relay dispatch also starts a watchdog run. `requested`
+  # fires when the relay run is *created*, so this keeps firing while a stuck
+  # run holds the relay's concurrency group — exactly when it's needed.
+  # It costs one short run per minute (public repo: free).
+  workflow_run:
+    workflows: ["PokeUpdates Bot"]
+    types: [requested]
+  workflow_dispatch:          # manual, or a cron-job.org job if one exists
   schedule:
     - cron: "*/30 * * * *"   # Backstop only — GitHub's cron fires a handful of times a day at best
 
@@ -29,4 +36,8 @@ jobs:
           NITTER_BASE:              ${{ vars.NITTER_BASE }}
           HEALTHCHECK_URL:          ${{ secrets.HEALTHCHECK_URL }}
           HEALTHCHECK_FALLBACK_URL: ${{ secrets.HEALTHCHECK_FALLBACK_URL }}
-        run: python3 src/watchdog.py
+          # Where stall / recovery notices go (see src/alerts.py)
+          DISCORD_ALERT_WEBHOOK_URL:    ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL:          ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL_RESTOCKS: ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
+        run: python3 -u src/watchdog.py
