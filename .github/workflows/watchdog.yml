@@ -36,8 +36,5 @@ jobs:
           NITTER_BASE:              ${{ vars.NITTER_BASE }}
           HEALTHCHECK_URL:          ${{ secrets.HEALTHCHECK_URL }}
           HEALTHCHECK_FALLBACK_URL: ${{ secrets.HEALTHCHECK_FALLBACK_URL }}
-          # Where stall / recovery notices go (see src/alerts.py)
-          DISCORD_ALERT_WEBHOOK_URL:    ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
-          DISCORD_WEBHOOK_URL:          ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_WEBHOOK_URL_RESTOCKS: ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
+          DISCORD_WEBHOOK_URL:      ${{ secrets.DISCORD_WEBHOOK_URL }}   # stall / recovery notices (src/alerts.py)
         run: python3 -u src/watchdog.py

@@ -49,7 +49,6 @@ jobs:
           DISCORD_RESTOCK_ROLE_ID:  ${{ vars.DISCORD_RESTOCK_ROLE_ID }}
           DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL_RESTOCKS:  ${{ secrets.DISCORD_WEBHOOK_URL_RESTOCKS }}
-          DISCORD_ALERT_WEBHOOK_URL:     ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}   # optional ops channel
         run: python3 -u src/main.py   # unbuffered: each log line appears live, with its real timestamp
 
       - name: Publish updated data

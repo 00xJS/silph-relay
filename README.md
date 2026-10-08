@@ -45,7 +45,7 @@ It uses nothing but the Python 3 standard library, so a run installs nothing and
 Two things run alongside the relay so a failure is fixed or reported instead of going unnoticed:
 
 - **Watchdog** (`watchdog.yml`): every relay dispatch also starts a watchdog run (GitHub's `workflow_run: requested` event, which fires even while a stuck run blocks the relay). If the relay has had no successful run for 10 minutes, it cancels whatever run is stuck. On 2026-09-12 a single run that GitHub never started blocked every run behind it for 24 hours. Once an hour it also checks that at least one Nitter fallback still answers.
-- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to `DISCORD_ALERT_WEBHOOK_URL` if set (a private ops channel), otherwise to the relay's own channels.
+- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to the Pokémon GO channel and never ping anyone.
 - **Heartbeat** (optional, [healthchecks.io](https://healthchecks.io) free tier): every healthy run pings a check. If the pings stop, you get an alert. That covers every way the relay can go quiet: stuck runs, an expired dispatch token, a scheduler outage, or every post source down at once.
 
 ---
@@ -92,7 +92,6 @@ cp .env.example .env   # only needed to run it on your own machine: python3 src/
 In your repo: Settings → Secrets and variables → Actions → Secrets:
 - `DISCORD_WEBHOOK_URL`
 - `DISCORD_WEBHOOK_URL_RESTOCKS`
-- `DISCORD_ALERT_WEBHOOK_URL` (optional) — a webhook for a private ops channel. Without it, stall and problem notices go to the Pokémon GO channel.
 - `HEALTHCHECK_URL` (optional) — a healthchecks.io check's ping URL. Set the check's period to 1 minute and its grace time to 10 minutes.
 - `HEALTHCHECK_FALLBACK_URL` (optional) — a second check for the hourly fallback test. Set period to 1 hour and grace to 1 day.
 
