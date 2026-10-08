@@ -20,10 +20,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tracker import (DELTA_FILE, load_seen_ids, save_seen_ids,
                      load_deliveries, save_deliveries,
-                     load_recent_posts, save_recent_posts)
+                     load_recent_posts, save_recent_posts, save_alert_state)
 
 MAX_ATTEMPTS = 6
-DATA_FILES = ["data/seen_ids.json", "data/deliveries.json", "data/recent_posts.json"]
+DATA_FILES = ["data/seen_ids.json", "data/deliveries.json", "data/recent_posts.json", "data/alerts.json"]
 
 
 def git(*args, check=True):
@@ -41,6 +41,8 @@ def apply_delta(delta):
         save_deliveries(load_deliveries() + [(str(a), int(b)) for a, b in delta["deliveries"]])
     if delta.get("log"):
         save_recent_posts(load_recent_posts() + delta["log"])
+    if delta.get("alerts") is not None:
+        save_alert_state(delta["alerts"])   # whole-state, last writer wins
 
 
 def main():

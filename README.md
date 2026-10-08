@@ -44,7 +44,8 @@ It uses nothing but the Python 3 standard library, so a run installs nothing and
 
 Two things run alongside the relay so a failure is fixed or reported instead of going unnoticed:
 
-- **Watchdog** (`watchdog.yml`, every 5 minutes): if the relay has had no successful run for 10 minutes, it cancels whatever run is stuck. On 2026-09-12 a single run that GitHub never started blocked every run behind it for 24 hours. Once an hour it also checks that at least one Nitter fallback still answers.
+- **Watchdog** (`watchdog.yml`): every relay dispatch also starts a watchdog run (GitHub's `workflow_run: requested` event, which fires even while a stuck run blocks the relay). If the relay has had no successful run for 10 minutes, it cancels whatever run is stuck. On 2026-09-12 a single run that GitHub never started blocked every run behind it for 24 hours. Once an hour it also checks that at least one Nitter fallback still answers.
+- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to `DISCORD_ALERT_WEBHOOK_URL` if set (a private ops channel), otherwise to the relay's own channels.
 - **Heartbeat** (optional, [healthchecks.io](https://healthchecks.io) free tier): every healthy run pings a check. If the pings stop, you get an alert. That covers every way the relay can go quiet: stuck runs, an expired dispatch token, a scheduler outage, or every post source down at once.
 
 ---
@@ -91,17 +92,17 @@ cp .env.example .env   # only needed to run it on your own machine: python3 src/
 In your repo: Settings → Secrets and variables → Actions → Secrets:
 - `DISCORD_WEBHOOK_URL`
 - `DISCORD_WEBHOOK_URL_RESTOCKS`
+- `DISCORD_ALERT_WEBHOOK_URL` (optional) — a webhook for a private ops channel. Without it, stall and problem notices go to the Pokémon GO channel.
 - `HEALTHCHECK_URL` (optional) — a healthchecks.io check's ping URL. Set the check's period to 1 minute and its grace time to 10 minutes.
 - `HEALTHCHECK_FALLBACK_URL` (optional) — a second check for the hourly fallback test. Set period to 1 hour and grace to 1 day.
 
 **5. Set up the triggers**
 
-GitHub's own cron is best-effort (often hours late), so both workflows are fired externally. Create a [fine-grained PAT](https://github.com/settings/personal-access-tokens) scoped to this repo only, with Actions read/write. Then create two cron-job.org jobs, each a `POST` with body `{"ref":"main"}` and headers `Authorization: Bearer <PAT>` and `Accept: application/vnd.github+json`:
+GitHub's own cron is best-effort (often hours late), so the relay is fired externally; the watchdog then piggybacks on every relay dispatch and needs no job of its own. Create a [fine-grained PAT](https://github.com/settings/personal-access-tokens) scoped to this repo only, with Actions read/write. Then create one cron-job.org job, a `POST` with body `{"ref":"main"}` and headers `Authorization: Bearer <PAT>` and `Accept: application/vnd.github+json`:
 
 | Job | URL | Schedule |
 |---|---|---|
 | Relay | `https://api.github.com/repos/<you>/<repo>/actions/workflows/pipeline.yml/dispatches` | every minute |
-| Watchdog | `https://api.github.com/repos/<you>/<repo>/actions/workflows/watchdog.yml/dispatches` | every 5 minutes |
 
 Test first from the Actions tab → PokeUpdates Bot → Run workflow.
 
@@ -131,6 +132,7 @@ silph-relay/
 │   ├── tracker.py        # Loads and saves the data files
 │   ├── commit_data.py    # Publishes the data files back to the repo, safely
 │   ├── heartbeat.py      # Reports each run to healthchecks.io (optional)
+│   ├── alerts.py         # Posts stall / problem notices to Discord
 │   ├── watchdog.py       # Cancels stuck relay runs; tests the fallback hourly
 │   ├── net.py            # Small standard-library HTTP helpers
 │   └── envfile.py        # Loads .env for local runs
@@ -140,7 +142,7 @@ silph-relay/
 │   └── recent_posts.json # The last 200 relayed posts (for the dashboard)
 ├── .github/workflows/
 │   ├── pipeline.yml      # The relay (dispatch-triggered, every minute)
-│   └── watchdog.yml      # The watchdog (dispatch-triggered, every 5 minutes)
+│   └── watchdog.yml      # The watchdog (runs on every relay dispatch)
 ├── dashboard/
 │   └── index.html        # Feed analytics dashboard (static, deployed to Netlify)
 ├── netlify.toml

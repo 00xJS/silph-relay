@@ -9,8 +9,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fetcher        import fetch_all, status_num, ACCOUNTS, FAST_ACCOUNTS
 from tracker        import (load_seen_ids, save_seen_ids, load_deliveries, save_deliveries,
-                            load_recent_posts, save_recent_posts, make_post_record, save_delta)
+                            load_recent_posts, save_recent_posts, make_post_record, save_delta,
+                            load_alert_state, EMPTY_ALERT_STATE)
 from discord_poster import post_to_discord, REJECTED_WEBHOOKS
+from alerts         import notify
 
 # Extra polls inside a single run, so latency isn't bounded by how often the
 # workflow is triggered. 1 = poll once and exit (the long-standing behaviour).
@@ -41,6 +43,13 @@ MIN_POLL_GAP = 5.0  # polls closer together than this add requests, not coverage
 
 # This run's verdict, for the Heartbeat step. Untracked, like the delta.
 HEALTH_FILE = Path("data/.health.json")
+
+# A health problem (every source down, a rejected webhook) is announced in
+# Discord only once it has persisted this long — a single bad minute stays
+# quiet — and repeated while it lasts at this interval. Clearing is announced
+# once. The state lives in data/alerts.json and is committed with the data.
+ALERT_AFTER  = float(os.getenv("ALERT_AFTER_SECONDS") or 10 * 60)
+ALERT_REMIND = float(os.getenv("ALERT_REMIND_SECONDS") or 6 * 3600)
 
 FAST_HANDLE_SET = {a["handle"] for a in FAST_ACCOUNTS}
 
@@ -143,6 +152,31 @@ def write_health(problems, summary):
         print(f"[main] !! {problem}")
 
 
+def update_alerts(problems):
+    """Advance the ops-alert state for this run's problems; send a notice when due.
+
+    Returns the new state when it changed (for the commit step), else None.
+    """
+    state = load_alert_state()
+    now = int(time.time())
+    if problems:
+        since = state.get("since")
+        if not since:
+            print("[main] Problem streak started — will alert if it persists")
+            return {"since": now, "alerted": None, "problems": problems}
+        alerted = state.get("alerted")
+        due = now - since >= ALERT_AFTER and (not alerted or now - alerted >= ALERT_REMIND)
+        if due and notify("⚠️ Relay has had a problem for "
+                          f"{(now - since) / 60:.0f} min:\n" + "\n".join(f"• {p}" for p in problems)):
+            return {"since": since, "alerted": now, "problems": problems}
+        return None
+    if state.get("since"):
+        if state.get("alerted"):
+            notify(f"✅ Relay problem cleared after {(now - state['since']) / 60:.0f} min.")
+        return dict(EMPTY_ALERT_STATE)
+    return None
+
+
 def main():
     started = time.monotonic()
     print(f"[main] Starting silph-relay run (Python {sys.version.split()[0]})")
@@ -231,6 +265,14 @@ def main():
     if unanswered and answered:
         summary += f"; no answer for {', '.join(sorted(unanswered))}"
     write_health(problems, summary)
+
+    try:
+        alert_state = update_alerts(problems)
+    except Exception as e:
+        print(f"[main] Could not update the alert state: {e}")
+        alert_state = None
+    if added_seen or all_delivered or alert_state is not None:
+        save_delta(new_seen=added_seen, deliveries=all_delivered, log_rows=all_log, alerts=alert_state)
 
     if not added_seen and not all_delivered:
         print("[main] Nothing new — done.")
