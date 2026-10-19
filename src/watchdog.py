@@ -57,6 +57,10 @@ STUCK_AFTER  = 10 * 60
 FORCE_AFTER  = 20 * 60   # still there after a normal cancel: force it
 JUST_STARTED = 4 * 60    # a job this fresh on a runner is working — leave it
 REMIND_AFTER = 6 * 3600  # a stall still going this long after the last watchdog pass: say so again
+# How long after its creation a run can still be marked complete. Normally
+# about a minute, but in GitHub's Actions incident of 2026-10-19 runs whose
+# jobs had finished were left "in progress" for up to 30 minutes.
+FINALIZE_LAG = 60 * 60
 
 CANARY_ACCOUNT = "LeekDuck"  # posts daily, so a working instance always lists something
 
@@ -118,14 +122,20 @@ def last_success_age():
     listing has served results days out of date (seen 2026-09-26), and this
     decides whether to cancel anything. If none of the newest runs succeeded,
     the oldest one's age is a lower bound — ample to call a stall.
+
+    The latest completion, not the newest run's: when GitHub finalizes runs
+    late they complete out of order (2026-10-19), and relay_healthy_at() must
+    reach the same verdict a pass reached here. A full page, so a run finalized
+    half an hour late is still in it.
     """
-    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?per_page=30")
+    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?per_page=100")
     if not r.ok:
         raise RuntimeError(f"listing relay runs failed: HTTP {r.status} {r.text[:200]}")
     runs = r.json().get("workflow_runs", [])
-    for run in runs:
-        if run.get("status") == "completed" and run.get("conclusion") == "success":
-            return seconds_since(run["updated_at"])
+    finished = [run["updated_at"] for run in runs
+                if run.get("status") == "completed" and run.get("conclusion") == "success"]
+    if finished:
+        return seconds_since(max(finished))
     return seconds_since(runs[-1]["created_at"]) if runs else None
 
 
@@ -195,8 +205,17 @@ def previous_watchdog_run():
 
 
 def relay_healthy_at(unix):
-    """Had the relay completed a successful run in the STALL_AFTER before `unix`?"""
-    since = iso(unix - STALL_AFTER - 120)   # a run finishes within ~a minute of its creation
+    """Had the relay completed a successful run in the STALL_AFTER before `unix`?
+
+    A run counts by when GitHub marked it complete (`updated_at`), the same
+    clock last_success_age() reads, but the API filters only by creation time,
+    so look back FINALIZE_LAG further. With the old 2-minute margin, runs
+    finalized late fell outside the window during the 2026-10-19 incident:
+    every pass thought the one before it had seen a stall, so it posted
+    "recovered" 28 times and suppressed the real stall alert. ~70 minutes of
+    runs at one a minute fit in a single page of 100.
+    """
+    since = iso(unix - STALL_AFTER - FINALIZE_LAG)
     r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?created=>={since}&per_page=100")
     if not r.ok:
         raise RuntimeError(f"listing relay runs since {since} failed: HTTP {r.status} {r.text[:200]}")
