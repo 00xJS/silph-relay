@@ -45,7 +45,7 @@ It uses nothing but the Python 3 standard library, so a run installs nothing and
 Two things run alongside the relay so a failure is fixed or reported instead of going unnoticed:
 
 - **Watchdog** (`watchdog.yml`): every relay dispatch also starts a watchdog run (GitHub's `workflow_run: requested` event, which fires even while a stuck run blocks the relay). If the relay has had no successful run for 10 minutes, it cancels whatever run is stuck. On 2026-09-12 a single run that GitHub never started blocked every run behind it for 24 hours. Once an hour it also checks that at least one Nitter fallback still answers.
-- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers — and only announces a recovery when the relay's own runs show a gap of 10+ minutes, so GitHub's API misreporting the past (as on 2026-10-19 and -22) can't flood the channel with false "recovered" messages. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to the Pokémon GO channel and never ping anyone.
+- **Discord alerts** (`src/alerts.py`): the watchdog's stall and recovery posts are **off** unless the `WATCHDOG_ALERTS` variable is `1` (below). Off, it still logs each one and flags a stall as a warning on its run. On, it posts once when a stall starts and once when the relay recovers — and only announces a recovery when the relay's own runs show a gap of 10+ minutes, so GitHub's API misreporting the past (as on 2026-10-19 and -22) can't flood the channel with false "recovered" messages. With them off, set up the heartbeat (below), or a stall goes unreported. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to the Pokémon GO channel and never ping anyone.
 - **Heartbeat** (optional, [healthchecks.io](https://healthchecks.io) free tier): every healthy run pings a check. If the pings stop, you get an alert. That covers every way the relay can go quiet: stuck runs, an expired dispatch token, a scheduler outage, or every post source down at once.
 
 ---
@@ -117,6 +117,7 @@ Settings → Secrets and variables → Actions → Variables. Changes take effec
 | `FEED_SOURCE` | `auto` | `auto` (FxTwitter, then Nitter), `fx`, or `nitter` |
 | `DISCORD_ACCOUNT_IDENTITY` | `1` | `0` posts under the webhook's own name and avatar instead of the account's |
 | `DISCORD_RESTOCK_ROLE_ID` | — | A role to mention on fresh restock posts, so members get notified |
+| `WATCHDOG_ALERTS` | off | `1` posts the watchdog's stall / recovery notices to the Pokémon GO channel |
 
 ---
 

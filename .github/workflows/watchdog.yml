@@ -36,5 +36,6 @@ jobs:
           NITTER_BASE:              ${{ vars.NITTER_BASE }}
           HEALTHCHECK_URL:          ${{ secrets.HEALTHCHECK_URL }}
           HEALTHCHECK_FALLBACK_URL: ${{ secrets.HEALTHCHECK_FALLBACK_URL }}
-          DISCORD_WEBHOOK_URL:      ${{ secrets.DISCORD_WEBHOOK_URL }}   # stall / recovery notices (src/alerts.py)
+          WATCHDOG_ALERTS:          ${{ vars.WATCHDOG_ALERTS }}          # 1 = post stall / recovery notices; unset = off
+          DISCORD_WEBHOOK_URL:      ${{ secrets.DISCORD_WEBHOOK_URL }}   # where they go when on (src/alerts.py)
         run: python3 -u src/watchdog.py

@@ -18,8 +18,12 @@ The stall gate matters: GitHub's API also lists a few "ghost" runs, queued with
 zero jobs since the 2026-09-11/13 incidents, that block nothing. While the
 relay is healthy they're left alone instead of being poked every 5 minutes.
 
-It also tells Discord (src/alerts.py) when a stall starts and when the relay
-recovers — once each, not every pass. The watchdog keeps no state of its own
+It can also tell Discord (src/alerts.py) when a stall starts and when the
+relay recovers — once each, not every pass. That's off unless the repo
+variable WATCHDOG_ALERTS is 1: after two GitHub incidents flooded the channel
+with false "recovered" posts, the channel's owner asked for none at all.
+Off, each would-be alert is still logged, and a stall is flagged as a warning
+on the run. The watchdog keeps no state of its own
 (sparse checkout, read-only contents), so "once" is judged from GitHub: an
 alert goes out only if the relay was still healthy when the *previous*
 watchdog run started, i.e. this pass is the first to see the stall.
@@ -48,6 +52,7 @@ RELAY_WORKFLOW = os.getenv("RELAY_WORKFLOW") or "pipeline.yml"
 THIS_WORKFLOW  = os.getenv("WATCHDOG_WORKFLOW") or "watchdog.yml"
 THIS_RUN_ID    = os.getenv("GITHUB_RUN_ID") or ""
 DRY_RUN        = (os.getenv("WATCHDOG_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
+ALERTS         = (os.getenv("WATCHDOG_ALERTS") or "").strip().lower() in ("1", "true", "yes")
 
 # The relay succeeds every minute, and GitHub's worst runner-allocation delay
 # seen so far (~5 min) resolved on its own — so 10 minutes without a success is
@@ -265,6 +270,16 @@ def outage_ended_after(unix):
     return not before or after[0] - before[-1] >= STALL_AFTER
 
 
+def send(message):
+    """Post a stall / recovery notice to Discord, or only log it while ALERTS is off."""
+    if ALERTS:
+        notify(message, source="silph-relay watchdog")
+        return
+    print(f"[watchdog] Discord alerts off (WATCHDOG_ALERTS) — not sent: {message}")
+    if message.startswith("⚠️"):
+        print(f"::warning::{message.splitlines()[0]}")
+
+
 def alert(stalled, age, done):
     """Tell Discord about a stall once, and once more when it ends.
 
@@ -287,12 +302,12 @@ def alert(stalled, age, done):
         if healthy_before is not False or (prev_age is not None and prev_age >= REMIND_AFTER):
             how_long = f"{age / 60:.0f} min" if age is not None else "an unknown time"
             detail = "\n".join(done) if done else "no stuck run found — check cron-job.org, the dispatch token, or githubstatus.com"
-            notify(f"⚠️ Relay stalled — no successful run for {how_long}.\n{detail}", source="silph-relay watchdog")
+            send(f"⚠️ Relay stalled — no successful run for {how_long}.\n{detail}")
         else:
             print("[watchdog] Stall already reported by an earlier pass — not repeating")
     elif prev is not None and healthy_before is False:
         if outage_ended_after(parse_stamp(prev["created_at"])):
-            notify(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.", source="silph-relay watchdog")
+            send(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.")
         else:
             print(f"::warning::Not announcing a recovery: the previous pass looked stalled, but no run "
                   f"gap of {STALL_AFTER // 60} min backs that up — GitHub's run history is inconsistent")

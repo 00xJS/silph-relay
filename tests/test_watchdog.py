@@ -9,6 +9,7 @@ have seen it, and check what reaches Discord.
 
 Run: python3 -m unittest discover -s tests
 """
+import importlib.util
 import json
 import os
 import sys
@@ -81,10 +82,15 @@ class FakeGitHub:
 
 
 def replay(relay_runs=None, search="ok", **patches):
-    """Run alert() for each watchdog pass from FROM to TO; return the Discord messages."""
+    """Run alert() for each watchdog pass from FROM to TO; return the Discord messages.
+
+    With Discord alerts switched on (WATCHDOG_ALERTS=1) unless a test says
+    otherwise, so the alert logic itself is what's tested.
+    """
     github = FakeGitHub(relay_runs or HISTORY["relay_runs"], HISTORY["watchdog_passes"], search)
     sent = []
-    patches = {"gh": github,
+    patches = {"ALERTS": True,
+               "gh": github,
                "notify": lambda msg, source=None: sent.append(msg.splitlines()[0]),
                "print": lambda *a, **k: None,
                **patches}
@@ -149,6 +155,21 @@ class RealStall(unittest.TestCase):
 
     def test_search_down_entirely(self):
         self.check(replay(stalled_history(), search="empty"))
+
+
+class AlertsOff(unittest.TestCase):
+    """WATCHDOG_ALERTS unset, the default: Discord hears nothing, even during a stall."""
+
+    def test_stall_sends_nothing(self):
+        self.assertEqual(replay(stalled_history(), ALERTS=False), [])
+
+    def test_off_unless_the_variable_says_on(self):
+        for value, on in (("", False), ("0", False), ("off", False), ("1", True), ("true", True)):
+            with mock.patch.dict(os.environ, {"WATCHDOG_ALERTS": value}):
+                spec = importlib.util.spec_from_file_location("watchdog_env", watchdog.__file__)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            self.assertIs(module.ALERTS, on, value)
 
 
 if __name__ == "__main__":
