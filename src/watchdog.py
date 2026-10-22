@@ -207,19 +207,36 @@ def previous_watchdog_run():
 def relay_healthy_at(unix):
     """Had the relay completed a successful run in the STALL_AFTER before `unix`?
 
+    True or False, or None when GitHub's listings can't say.
+
     A run counts by when GitHub marked it complete (`updated_at`), the same
-    clock last_success_age() reads, but the API filters only by creation time,
-    so look back FINALIZE_LAG further. With the old 2-minute margin, runs
-    finalized late fell outside the window during the 2026-10-19 incident:
-    every pass thought the one before it had seen a stall, so it posted
-    "recovered" 28 times and suppressed the real stall alert. ~70 minutes of
-    runs at one a minute fit in a single page of 100.
+    clock last_success_age() reads. A run finalized up to FINALIZE_LAG after
+    its creation still counts: with a 2-minute margin, late-finalized runs fell
+    outside the window during the 2026-10-19 incident, every pass thought the
+    one before it had seen a stall, and it posted "recovered" 28 times.
+
+    Read from the plain run list, as last_success_age() does, whenever it
+    reaches back far enough (the usual case: the previous pass was a minute
+    ago). The `created=` search is only a fallback for an old previous pass:
+    on 2026-10-22 GitHub's search answered with zero runs on most calls while
+    the plain list was fine, and each empty answer read as "the last pass saw
+    a stall", so it posted "recovered" ~40 times in two hours.
     """
-    since = iso(unix - STALL_AFTER - FINALIZE_LAG)
-    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?created=>={since}&per_page=100")
+    since = unix - STALL_AFTER - FINALIZE_LAG
+    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?per_page=100")
     if not r.ok:
-        raise RuntimeError(f"listing relay runs since {since} failed: HTTP {r.status} {r.text[:200]}")
-    for run in r.json().get("workflow_runs", []):
+        raise RuntimeError(f"listing relay runs failed: HTTP {r.status} {r.text[:200]}")
+    runs = r.json().get("workflow_runs", [])
+    if not runs or parse_stamp(min(run["created_at"] for run in runs)) > since:
+        r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?created=>={iso(since)}&per_page=100")
+        if not r.ok:
+            raise RuntimeError(f"listing relay runs since {iso(since)} failed: HTTP {r.status} {r.text[:200]}")
+        runs = r.json().get("workflow_runs", [])
+        if not runs:
+            # A watchdog pass only runs when a relay run is dispatched, so an
+            # empty answer is GitHub's search failing, not a quiet relay.
+            return None
+    for run in runs:
         if run.get("status") == "completed" and run.get("conclusion") == "success":
             if unix - STALL_AFTER <= parse_stamp(run["updated_at"]) <= unix:
                 return True
@@ -233,6 +250,8 @@ def alert(stalled, age, done):
     run started, this pass is the first to see the stall. If a stall outlasts
     REMIND_AFTER since the previous pass (GitHub's sparse backstop cron), say
     it again. Recovery is announced by the first healthy pass after a stalled one.
+    When GitHub can't say how the previous pass found the relay, a stall is
+    reported anyway (a repeat beats silence) and a recovery is not.
     """
     prev = previous_watchdog_run()
     if prev is None:
@@ -242,13 +261,13 @@ def alert(stalled, age, done):
         healthy_before = relay_healthy_at(parse_stamp(prev["created_at"]))
 
     if stalled:
-        if healthy_before or (prev_age is not None and prev_age >= REMIND_AFTER):
+        if healthy_before is not False or (prev_age is not None and prev_age >= REMIND_AFTER):
             how_long = f"{age / 60:.0f} min" if age is not None else "an unknown time"
             detail = "\n".join(done) if done else "no stuck run found — check cron-job.org, the dispatch token, or githubstatus.com"
             notify(f"⚠️ Relay stalled — no successful run for {how_long}.\n{detail}", source="silph-relay watchdog")
         else:
             print("[watchdog] Stall already reported by an earlier pass — not repeating")
-    elif prev is not None and not healthy_before:
+    elif prev is not None and healthy_before is False:
         notify(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.", source="silph-relay watchdog")
     else:
         print("[watchdog] Nothing to report")
