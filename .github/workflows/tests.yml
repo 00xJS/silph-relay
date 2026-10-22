@@ -1,0 +1,27 @@
+name: Tests
+
+on:
+  # Code changes only: the relay's own data commits (data/) land every minute
+  # and must not start a test run each time.
+  push:
+    paths: ["src/**", "tests/**", ".github/workflows/tests.yml"]
+  pull_request:
+    paths: ["src/**", "tests/**", ".github/workflows/tests.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          show-progress: false
+
+      # Standard library only, like the relay: the runner's own Python 3.
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -v

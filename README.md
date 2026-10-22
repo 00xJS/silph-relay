@@ -45,7 +45,7 @@ It uses nothing but the Python 3 standard library, so a run installs nothing and
 Two things run alongside the relay so a failure is fixed or reported instead of going unnoticed:
 
 - **Watchdog** (`watchdog.yml`): every relay dispatch also starts a watchdog run (GitHub's `workflow_run: requested` event, which fires even while a stuck run blocks the relay). If the relay has had no successful run for 10 minutes, it cancels whatever run is stuck. On 2026-09-12 a single run that GitHub never started blocked every run behind it for 24 hours. Once an hour it also checks that at least one Nitter fallback still answers.
-- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to the Pokémon GO channel and never ping anyone.
+- **Discord alerts** (`src/alerts.py`): the watchdog posts once when a stall starts and once when the relay recovers — and only announces a recovery when the relay's own runs show a gap of 10+ minutes, so GitHub's API misreporting the past (as on 2026-10-19 and -22) can't flood the channel with false "recovered" messages. The relay itself posts when a problem a green run would hide — every post source down, or Discord rejecting a webhook — has persisted for 10 minutes, and again when it clears. Alerts go to the Pokémon GO channel and never ping anyone.
 - **Heartbeat** (optional, [healthchecks.io](https://healthchecks.io) free tier): every healthy run pings a check. If the pings stop, you get an alert. That covers every way the relay can go quiet: stuck runs, an expired dispatch token, a scheduler outage, or every post source down at once.
 
 ---
@@ -141,7 +141,11 @@ silph-relay/
 │   └── recent_posts.json # The last 200 relayed posts (for the dashboard)
 ├── .github/workflows/
 │   ├── pipeline.yml      # The relay (dispatch-triggered, every minute)
-│   └── watchdog.yml      # The watchdog (runs on every relay dispatch)
+│   ├── watchdog.yml      # The watchdog (runs on every relay dispatch)
+│   └── tests.yml         # Runs tests/ when code changes
+├── tests/
+│   ├── test_watchdog.py  # Replays real GitHub run history through the watchdog's alerts
+│   └── fixtures/         # That history (2026-10-22)
 ├── dashboard/
 │   └── index.html        # Feed analytics dashboard (static, deployed to Netlify)
 ├── netlify.toml

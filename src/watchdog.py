@@ -243,6 +243,28 @@ def relay_healthy_at(unix):
     return False
 
 
+def outage_ended_after(unix):
+    """Do the relay's own runs show an outage that ended after `unix`?
+
+    True when the first run to succeed after `unix` came at least STALL_AFTER
+    after the success before it (or nothing earlier succeeded in the list).
+    A real stall always leaves that gap. A false "recovered" never has: both
+    floods (2026-10-19 and -22) came from GitHub's API misdescribing an
+    earlier moment while runs kept succeeding a minute apart. So no recovery
+    is announced without this evidence, however the previous pass is judged.
+    """
+    r = gh(f"/repos/{REPO}/actions/workflows/{RELAY_WORKFLOW}/runs?per_page=100")
+    if not r.ok:
+        raise RuntimeError(f"listing relay runs failed: HTTP {r.status} {r.text[:200]}")
+    finished = sorted(parse_stamp(run["updated_at"]) for run in r.json().get("workflow_runs", [])
+                      if run.get("status") == "completed" and run.get("conclusion") == "success")
+    after = [t for t in finished if t > unix]
+    if not after:
+        return False
+    before = [t for t in finished if t < after[0]]
+    return not before or after[0] - before[-1] >= STALL_AFTER
+
+
 def alert(stalled, age, done):
     """Tell Discord about a stall once, and once more when it ends.
 
@@ -251,7 +273,8 @@ def alert(stalled, age, done):
     REMIND_AFTER since the previous pass (GitHub's sparse backstop cron), say
     it again. Recovery is announced by the first healthy pass after a stalled one.
     When GitHub can't say how the previous pass found the relay, a stall is
-    reported anyway (a repeat beats silence) and a recovery is not.
+    reported anyway (a repeat beats silence) and a recovery is not. Nor is one
+    the runs themselves don't back up (outage_ended_after).
     """
     prev = previous_watchdog_run()
     if prev is None:
@@ -268,7 +291,11 @@ def alert(stalled, age, done):
         else:
             print("[watchdog] Stall already reported by an earlier pass — not repeating")
     elif prev is not None and healthy_before is False:
-        notify(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.", source="silph-relay watchdog")
+        if outage_ended_after(parse_stamp(prev["created_at"])):
+            notify(f"✅ Relay recovered — a run succeeded {age:.0f}s ago.", source="silph-relay watchdog")
+        else:
+            print(f"::warning::Not announcing a recovery: the previous pass looked stalled, but no run "
+                  f"gap of {STALL_AFTER // 60} min backs that up — GitHub's run history is inconsistent")
     else:
         print("[watchdog] Nothing to report")
 
